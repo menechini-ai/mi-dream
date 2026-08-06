@@ -13,7 +13,7 @@ from prompt_toolkit.document import Document
 from mi_dream.cli.commands import dispatch
 from mi_dream.cli.completer import SlashCompleter
 from mi_dream.cli.repl import build_system_prompt, recall_context
-from mi_dream.cli.session import SessionManager
+from mi_dream.cli.session import SessionManager, new_session_id
 from mi_dream.knowledge.models import Strategy, StrategyState
 from mi_dream.knowledge.router import ExecutionContext
 
@@ -106,3 +106,32 @@ async def test_repl_bootstraps_schema_automatically():
         await REPL(mgr).run()
 
     mock_ensure.assert_awaited_once()
+
+
+def test_new_session_id_is_random_and_resumable():
+    ids = {new_session_id() for _ in range(50)}
+    assert len(ids) == 50  # colisões essencialmente impossíveis
+    sid = next(iter(ids))
+    assert len(sid) > 4
+    assert "-" in sid
+
+
+@pytest.mark.asyncio
+async def test_repl_creates_random_session_on_start(tmp_path):
+    from unittest.mock import MagicMock
+
+    from mi_dream.cli.repl import REPL
+
+    async def fake_prompt(*args, **kwargs):
+        raise SystemExit
+
+    with patch("mi_dream.cli.repl.PromptSession") as MockPS:
+        MockPS.return_value = MagicMock()
+        MockPS.return_value.prompt_async = fake_prompt
+        mgr = SessionManager(session_dir=tmp_path)
+        await REPL(mgr).run()
+
+    session = mgr.current()
+    assert session.name != "default"
+    assert "-" in session.name
+    assert (tmp_path / f"{session.name}.json").exists()  # salva com o ID aleatório

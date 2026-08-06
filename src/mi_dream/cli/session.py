@@ -3,8 +3,14 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 DEFAULT_SESSION_DIR = Path.home() / ".mi-dream" / "sessions"
+
+
+def new_session_id() -> str:
+    """Random, human-readable session ID (resumable via /session <id>)."""
+    return f"{datetime.now():%m%d%H%M}-{uuid4().hex[:4]}"
 
 
 @dataclass

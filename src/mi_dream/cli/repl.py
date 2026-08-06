@@ -20,7 +20,7 @@ from mi_dream.cli.renderer import (
     render_skills,
     render_status,
 )
-from mi_dream.cli.session import SessionManager
+from mi_dream.cli.session import SessionManager, new_session_id
 from mi_dream.config import settings
 from mi_dream.health import check_all
 from mi_dream.knowledge.repository import StrategyRepository
@@ -81,7 +81,7 @@ class REPL:
         except Exception:
             pass
 
-        session = PromptSession(
+        prompt_session = PromptSession(
             history=FileHistory(HISTORY_PATH),
             completer=self._completer,
             complete_while_typing=True,
@@ -89,11 +89,13 @@ class REPL:
             multiline=False,
         )
         console.print("[bold cyan]mi-dream[/bold cyan] — Multi-Agent Learning System")
+        sess = self._session_mgr.create(new_session_id())
+        console.print(f"[dim]Session {sess.name}[/dim] — retomar depois com /session {sess.name}")
         console.print("[dim]Type /help for commands, Ctrl+C to exit[/dim]\n")
 
         while self._running:
             try:
-                user_input = await session.prompt_async("\n> ")
+                user_input = await prompt_session.prompt_async("\n> ")
                 if not user_input.strip():
                     continue
 
@@ -118,7 +120,18 @@ class REPL:
                     elif cmd == "help":
                         render_help()
                     elif cmd == "session":
-                        console.print(f"[cyan]{dispatch(cmd, args)}[/cyan]")
+                        name = args.strip()
+                        if name:
+                            sess = self._session_mgr.resume(name)
+                            console.print(
+                                f"[cyan]Session {sess.name} resumed"
+                                f" ({len(sess.context)} messages).[/cyan]"
+                            )
+                        else:
+                            sess = self._session_mgr.create(new_session_id())
+                            console.print(
+                                f"[cyan]Started new session {sess.name}.[/cyan]"
+                            )
                     elif cmd == "clear":
                         self._session_mgr.clear_context()
                         console.print("[cyan]Context cleared.[/cyan]")
@@ -166,4 +179,5 @@ class REPL:
                 render_error(str(e))
 
         self._session_mgr.save()
-        console.print("\n[dim]Session saved. Goodbye![/dim]")
+        sess = self._session_mgr.current()
+        console.print(f"\n[bold]Session {sess.name} saved. Goodbye![/bold]")
