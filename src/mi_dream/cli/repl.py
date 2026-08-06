@@ -25,7 +25,7 @@ from mi_dream.config import settings
 from mi_dream.health import check_all
 from mi_dream.knowledge.repository import StrategyRepository
 from mi_dream.knowledge.router import ExecutionContext, StrategyRouter
-from mi_dream.llm.client import ask_llm
+from mi_dream.llm.client import ask_llm_full
 from mi_dream.memory.connection import get_driver
 
 HISTORY_PATH = str(Path.home() / ".mi-dream" / "history")
@@ -54,6 +54,13 @@ async def recall_context(goal: str) -> ExecutionContext:
             return await router.retrieve(goal, {"domain": "general"}, settings.tenant_id)
     except Exception:
         return ExecutionContext(goal=goal)
+
+
+def format_latency(latency_ms: float) -> str:
+    """Human-readable latency, e.g. ``1.2s`` or ``340ms``."""
+    if latency_ms >= 1000:
+        return f"{latency_ms / 1000:.1f}s"
+    return f"{latency_ms:.0f}ms"
 
 
 class REPL:
@@ -147,18 +154,21 @@ class REPL:
                 system_prompt = build_system_prompt(context)
 
                 with console.status("[bold cyan]Thinking...", spinner="dots"):
-                    assistant_msg = await asyncio.get_event_loop().run_in_executor(
+                    resp = await asyncio.get_event_loop().run_in_executor(
                         None,
-                        lambda: ask_llm(
+                        lambda: ask_llm_full(
                             system=system_prompt,
                             user_message=user_input,
                             max_tokens=1024,
                         ),
                     )
+                assistant_msg = resp.content
 
                 self._session_mgr.add_message("assistant", assistant_msg)
                 render_message("assistant", assistant_msg)
-                render_status(settings.llm_model, 0, "—")
+                render_status(
+                    settings.llm_model, resp.total_tokens, format_latency(resp.latency_ms)
+                )
 
                 # Persist a PII-sanitized reasoning trace (SDD §18.2); never block chat on failure
                 try:

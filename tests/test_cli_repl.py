@@ -116,6 +116,14 @@ def test_new_session_id_is_random_and_resumable():
     assert "-" in sid
 
 
+def test_format_latency():
+    from mi_dream.cli.repl import format_latency
+
+    assert format_latency(340) == "340ms"
+    assert format_latency(0) == "0ms"
+    assert format_latency(1250) == "1.2s"
+
+
 @pytest.mark.asyncio
 async def test_repl_creates_random_session_on_start(tmp_path):
     from unittest.mock import MagicMock

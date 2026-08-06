@@ -116,7 +116,12 @@ async def test_load_chat_contexts_and_learning(live_neo4j, monkeypatch):
     from mi_dream.cli import repl as repl_mod
     from mi_dream.learning import reflector as reflector_mod
 
-    monkeypatch.setattr(repl_mod, "ask_llm", _canned_assistant)
+    def _canned_response(system, user_message, max_tokens=1024):
+        from mi_dream.llm.client import LLMResponse
+
+        return LLMResponse(content=_canned_assistant(user_message), total_tokens=42)
+
+    monkeypatch.setattr(repl_mod, "ask_llm_full", _canned_response)
     monkeypatch.setattr(reflector_mod, "ask_llm", lambda *a, **k: (_ for _ in ()).throw(
         RuntimeError("llm mocked off for load test")
     ))

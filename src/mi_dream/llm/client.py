@@ -1,5 +1,8 @@
 """LLM client wrapper — uses OpenAI SDK for OpenAI-compatible proxies."""
 
+import time
+from dataclasses import dataclass
+
 from openai import OpenAI
 
 from mi_dream.config import settings
@@ -19,9 +22,25 @@ def get_client() -> OpenAI:
     return _client
 
 
-def ask_llm(system: str, user_message: str, max_tokens: int = 1024) -> str:
-    """Send a chat message and return the response text (runs in executor)."""
+@dataclass
+class LLMResponse:
+    """Result of an LLM call: content plus observable usage/latency."""
+
+    content: str
+    total_tokens: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    latency_ms: float = 0.0
+
+
+def ask_llm_full(system: str, user_message: str, max_tokens: int = 1024) -> LLMResponse:
+    """Send a chat message and return content + token usage + latency.
+
+    ``usage`` may be absent on some OpenAI-compatible proxies — both fields
+    fall back to 0 in that case.
+    """
     client = get_client()
+    start = time.monotonic()
     response = client.chat.completions.create(
         model=settings.llm_model,
         max_tokens=max_tokens,
@@ -30,10 +49,23 @@ def ask_llm(system: str, user_message: str, max_tokens: int = 1024) -> str:
             {"role": "user", "content": user_message},
         ],
     )
+    latency_ms = (time.monotonic() - start) * 1000
     content = response.choices[0].message.content
     if not content:
-        return "[empty response from provider]"
-    return content
+        content = "[empty response from provider]"
+    usage = getattr(response, "usage", None)
+    return LLMResponse(
+        content=content,
+        total_tokens=getattr(usage, "total_tokens", 0) or 0,
+        prompt_tokens=getattr(usage, "prompt_tokens", 0) or 0,
+        completion_tokens=getattr(usage, "completion_tokens", 0) or 0,
+        latency_ms=latency_ms,
+    )
+
+
+def ask_llm(system: str, user_message: str, max_tokens: int = 1024) -> str:
+    """Send a chat message and return the response text (runs in executor)."""
+    return ask_llm_full(system, user_message, max_tokens).content
 
 
 def chat(system: str, user_message: str, max_tokens: int = 1024) -> str:
