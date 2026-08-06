@@ -20,10 +20,15 @@ async def recall_strategy(
 
 async def save_reasoning_trace(trace_id: str, content: str, metadata: dict, driver) -> None:
     """Tool: grava ReasoningTrace via memory.reasoning (PII-sanitized, SDD §18.2)."""
+    if isinstance(metadata, str):
+        try:
+            metadata = json.loads(metadata)
+        except json.JSONDecodeError:
+            metadata = {"raw": metadata}
     tenant_id = metadata.get("tenant_id", "default")
     outcome = metadata.get("outcome", "unknown")
     content = sanitize(content)
-    metadata_json = json.dumps(metadata)
+    metadata_json = json.dumps(metadata, sort_keys=True, separators=(",", ":"))
     async with driver.session() as session:
         await session.run(
             """
@@ -100,7 +105,7 @@ def make_save_reasoning_trace_tool(tenant_id: str = "default"):
         """
         metadata = {"tenant_id": tenant_id, "outcome": outcome}
         content = sanitize(content)
-        metadata_json = json.dumps(metadata)
+        metadata_json = json.dumps(metadata, sort_keys=True, separators=(",", ":"))
         async with get_driver().session() as session:
             await session.run(
                 """

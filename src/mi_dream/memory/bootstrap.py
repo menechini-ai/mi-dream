@@ -3,7 +3,11 @@ from mi_dream.memory.connection import get_driver
 
 _bootstrapped = False
 
-SCHEMA_CYPHER = """
+
+def _schema_cypher() -> str:
+    """Constraints + vector indexes, dimensions sourced from settings."""
+    dims = settings.embedding_dimensions
+    return f"""
 CREATE CONSTRAINT strategy_id IF NOT EXISTS
 FOR (s:Strategy) REQUIRE s.id IS UNIQUE;
 
@@ -18,18 +22,18 @@ FOR (t:ReasoningTrace) REQUIRE t.id IS UNIQUE;
 
 CREATE VECTOR INDEX strategy_embedding IF NOT EXISTS
 FOR (s:Strategy) ON (s.embedding)
-OPTIONS {indexConfig: {`vector.dimensions`: 1536, `vector.similarity_function`: 'cosine'}};
+OPTIONS {{indexConfig: {{`vector.dimensions`: {dims}, `vector.similarity_function`: 'cosine'}}}};
 
 CREATE VECTOR INDEX episode_embedding IF NOT EXISTS
 FOR (e:Episode) ON (e.embedding)
-OPTIONS {indexConfig: {`vector.dimensions`: 1536, `vector.similarity_function`: 'cosine'}};
+OPTIONS {{indexConfig: {{`vector.dimensions`: {dims}, `vector.similarity_function`: 'cosine'}}}};
 """
 
 
 async def bootstrap_schema() -> None:
     driver = get_driver()
     async with driver.session(database=settings.neo4j_database) as session:
-        for stmt in SCHEMA_CYPHER.strip().split(";"):
+        for stmt in _schema_cypher().strip().split(";"):
             stmt = stmt.strip()
             if stmt:
                 await session.run(stmt)

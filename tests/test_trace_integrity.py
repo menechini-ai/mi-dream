@@ -33,6 +33,18 @@ def test_trace_fingerprint_is_deterministic():
     assert len(a) == 64
 
 
+def test_trace_fingerprint_accepts_dict_and_string_identically():
+    d = trace_fingerprint("c", "success", {"outcome": "success", "tenant_id": "t1"})
+    s = trace_fingerprint("c", "success", '{"outcome":"success","tenant_id":"t1"}')
+    assert d == s
+
+
+def test_trace_fingerprint_canonicalizes_key_order():
+    a = trace_fingerprint("c", "s", {"tenant_id": "t1", "outcome": "success"})
+    b = trace_fingerprint("c", "s", {"outcome": "success", "tenant_id": "t1"})
+    assert a == b
+
+
 def test_trace_fingerprint_changes_with_content():
     a = trace_fingerprint("original", "success", '{"tenant_id": "default"}')
     b = trace_fingerprint("mutated", "success", '{"tenant_id": "default"}')
@@ -54,9 +66,27 @@ async def test_save_reasoning_trace_stores_content_hash():
     query = session.run.call_args.args[0]
     assert "content_hash" in query
     stored = session.run.call_args.kwargs["content_hash"]
-    meta = '{"tenant_id": "t1", "outcome": "success"}'
-    expected = trace_fingerprint("the reasoning", "success", meta)
-    assert stored == expected
+    meta = session.run.call_args.kwargs["metadata"]
+    assert stored == trace_fingerprint("the reasoning", "success", meta)
+
+
+@pytest.mark.asyncio
+async def test_save_reasoning_trace_accepts_serialized_metadata():
+    from mi_dream.agents.tools import save_reasoning_trace
+
+    driver = MagicMock()
+    session = AsyncMock()
+    session.__aenter__.return_value = session
+    driver.session.return_value = session
+
+    await save_reasoning_trace(
+        "tr-3", "the reasoning", '{"tenant_id": "t1", "outcome": "success"}', driver
+    )
+
+    kwargs = session.run.call_args.kwargs
+    assert kwargs["metadata"] == '{"outcome":"success","tenant_id":"t1"}'
+    expected = trace_fingerprint("the reasoning", "success", kwargs["metadata"])
+    assert kwargs["content_hash"] == expected
 
 
 @pytest.mark.asyncio
@@ -78,10 +108,8 @@ async def test_save_tool_stores_content_hash():
     query = session.run.call_args.args[0]
     assert "content_hash" in query
     stored = session.run.call_args.kwargs["content_hash"]
-    expected = trace_fingerprint(
-        "tool reasoning", "success", '{"tenant_id": "t1", "outcome": "success"}'
-    )
-    assert stored == expected
+    meta = session.run.call_args.kwargs["metadata"]
+    assert stored == trace_fingerprint("tool reasoning", "success", meta)
 
 
 def _trace_record(trace_id, content, outcome, metadata, content_hash):

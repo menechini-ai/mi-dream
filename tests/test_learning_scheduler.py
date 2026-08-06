@@ -96,6 +96,7 @@ async def test_run_cycle_links_lesson_via_derived_from():
         await ReflectionScheduler().run_cycle()
 
     queries = [c.args[0] for c in mock_session.run.call_args_list]
-    assert "[:DERIVED_FROM]" in queries[-1]
-    assert "REFLECTED_IN" not in queries[-1]
-    assert "DERIVED_FROM" in queries[0]
+    create_queries = [q for q in queries if "CREATE (l:Lesson" in q]
+    assert len(create_queries) == 1
+    assert "[:DERIVED_FROM]" in create_queries[0]
+    assert "REFLECTED_IN" not in create_queries[0]
