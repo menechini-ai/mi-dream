@@ -46,6 +46,7 @@ class Strategy(StrategyCreate):
     created_at: datetime
     updated_at: datetime
     superseded_by: str | None = None
+    score: float | None = None  # preenchido pelo recall vetorial (cosine similarity)
 
     model_config = {"from_attributes": True}
 

@@ -152,19 +152,17 @@ class Curator:
         return duplicates
 
     async def process_experimental_candidates(self, tenant_id: str) -> list[Strategy]:
-        """Promote EXPERIMENTAL -> ACTIVE if criteria met (INV-002)."""
+        """Promote EXPERIMENTAL -> ACTIVE if criteria met (INV-002).
+
+        Returns the promoted strategies already in ACTIVE state.
+        """
         result = await self._session.run(
             """
             MATCH (s:Strategy {state: 'EXPERIMENTAL', tenant_id: $tenant_id})
             WHERE s.support_count >= 3 AND s.success_rate >= 0.6
+            SET s.state = 'ACTIVE', s.updated_at = datetime()
             RETURN s {.*} AS s
             """,
             tenant_id=tenant_id,
         )
-        candidates = [Strategy(**r["s"]) async for r in result]
-        for c in candidates:
-            await self._session.run(
-                "MATCH (s:Strategy {id: $id}) SET s.state = 'ACTIVE', s.updated_at = datetime()",
-                id=c.id,
-            )
-        return candidates
+        return [Strategy(**r["s"]) async for r in result]

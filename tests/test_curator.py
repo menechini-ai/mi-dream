@@ -97,9 +97,13 @@ def test_integrity_check_cycle_detection_uses_relationship():
 @pytest.mark.asyncio
 async def test_process_experimental_promotes_eligible():
     session = AsyncMock()
-    eligible = _mock_strategy(StrategyState.EXPERIMENTAL, support_count=3, success_rate=0.7)
-    items = [{"s": eligible.model_dump(mode="json")}]
+    promoted_state = _mock_strategy(StrategyState.ACTIVE, support_count=3, success_rate=0.7)
+    items = [{"s": promoted_state.model_dump(mode="json")}]
     session.run.return_value = FakeAsyncIter(items)
     curator = Curator(session)
     promoted = await curator.process_experimental_candidates("default")
     assert len(promoted) == 1
+    assert promoted[0].state == StrategyState.ACTIVE
+    query = session.run.call_args.args[0]
+    assert "SET s.state = 'ACTIVE'" in query
+    assert "support_count >= 3 AND s.success_rate >= 0.6" in query

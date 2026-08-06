@@ -89,7 +89,6 @@ class StrategyVectorRetriever:
         strategies = []
         for item in result.items:
             data = dict(item.metadata)
-            data.pop("score", None)
             strategies.append(Strategy(**data))
         return strategies
 
