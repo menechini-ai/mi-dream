@@ -1,0 +1,25 @@
+services:
+  neo4j:
+    image: neo4j:5.26
+    container_name: mi-dream-neo4j
+    environment:
+      NEO4J_AUTH: neo4j/password
+      NEO4J_PLUGINS: '["apoc"]'
+      NEO4J_dbms_memory_heap_max__size: 1G
+      NEO4J_dbms_memory_pagecache_size: 512M
+    ports:
+      - "7687:7687"
+      - "7474:7474"
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+    healthcheck:
+      test: ["CMD-SHELL", "cypher-shell -u neo4j -p password 'RETURN 1' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+volumes:
+  neo4j_data:
+  neo4j_logs:

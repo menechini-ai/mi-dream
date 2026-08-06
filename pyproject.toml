@@ -1,0 +1,46 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mi-dream"
+version = "0.1.0"
+description = "Multi-Agent Learning System with continuous learning memory"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "neo4j>=5.20",
+    "neo4j-agent-memory",
+    "deepagents",
+    "langchain-openai>=0.2",
+    "pydantic>=2.0",
+    "pydantic-settings>=2.0",
+    "python-dotenv>=1.0",
+    "openai>=1.0",
+    "rich>=13.0",
+    "prompt-toolkit>=3.0",
+    "typer>=0.15",
+    "neo4j-graphrag>=1.18.0",
+]
+
+[project.scripts]
+mi-dream = "mi_dream.cli.app:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "respx>=0.20",
+    "ruff>=0.6",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
