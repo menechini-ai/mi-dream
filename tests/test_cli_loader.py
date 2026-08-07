@@ -1,13 +1,15 @@
 import os
 import sys
+from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../src"))
 
 from mi_dream.cli.loader import load_agents, load_skills
 
-FIXTURE_SKILLS = "/home/access/AI/mi-dream/.midream/skills"
-FIXTURE_AGENTS = "/home/access/AI/mi-dream/.midream/agents"
+FIXTURES = Path(__file__).resolve().parent / "fixtures"
+FIXTURE_SKILLS = str(FIXTURES / "skills")
+FIXTURE_AGENTS = str(FIXTURES / "agents")
 
 
 def test_load_skills_returns_list():
