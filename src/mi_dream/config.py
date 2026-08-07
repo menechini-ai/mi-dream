@@ -29,6 +29,9 @@ class Settings(BaseSettings):
     vector_top_k: int = 5
     skills_dir: str = ".midream/skills"
     agents_dir: str = ".midream/agents"
+    agent_max_iterations: int = 5
+    enable_shell_tool: bool = False
+    tool_workdir: str = "."
 
 
 settings = Settings()

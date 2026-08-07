@@ -110,3 +110,67 @@ def ask_llm_full(
 def ask_llm(system: str, user_message: str, max_tokens: int = 1024) -> str:
     """Send a chat message and return the response text (runs in executor)."""
     return ask_llm_full(system, user_message, max_tokens).content
+
+
+@dataclass
+class ToolCall:
+    """A single tool call the model requested in a chat turn."""
+
+    id: str
+    name: str
+    arguments: str
+
+
+@dataclass
+class ChatTurn:
+    """Result of a raw chat turn: content plus any tool calls the model made."""
+
+    content: str
+    tool_calls: list[ToolCall]
+    total_tokens: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    latency_ms: float = 0.0
+
+
+def chat_turn(
+    messages: list[dict],
+    tools: list[dict] | None = None,
+    max_tokens: int = 1024,
+) -> ChatTurn:
+    """Send raw messages to the LLM, optionally advertising tool schemas.
+
+    Returns content plus any ``tool_calls`` the model requested so callers can
+    run them and feed the results back (``role: "tool"``) in a following turn.
+    """
+    client = get_client()
+    kwargs: dict = {
+        "model": settings.llm_model,
+        "max_tokens": max_tokens,
+        "temperature": settings.llm_temperature,
+        "messages": messages,
+    }
+    if tools:
+        kwargs["tools"] = tools
+    start = time.monotonic()
+    response = client.chat.completions.create(**kwargs)
+    latency_ms = (time.monotonic() - start) * 1000
+    msg = response.choices[0].message
+    content = msg.content or "[empty response from provider]"
+    tool_calls = [
+        ToolCall(
+            id=tc.id,
+            name=tc.function.name,
+            arguments=tc.function.arguments,
+        )
+        for tc in (msg.tool_calls or [])
+    ]
+    usage = getattr(response, "usage", None)
+    return ChatTurn(
+        content=content,
+        tool_calls=tool_calls,
+        total_tokens=getattr(usage, "total_tokens", 0) or 0,
+        prompt_tokens=getattr(usage, "prompt_tokens", 0) or 0,
+        completion_tokens=getattr(usage, "completion_tokens", 0) or 0,
+        latency_ms=latency_ms,
+    )

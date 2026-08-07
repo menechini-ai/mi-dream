@@ -59,8 +59,7 @@ def build_system_prompt(context: ExecutionContext) -> str:
         for f in context.previous_failures[-5:]:
             count = f.get("failure_count", 0)
             lines.append(
-                f"- [{f.get('error_type', 'unknown')} x{count}] "
-                f"{(f.get('pattern') or '')[:200]}"
+                f"- [{f.get('error_type', 'unknown')} x{count}] {(f.get('pattern') or '')[:200]}"
             )
     if context.recent_traces:
         lines.append("")
@@ -303,9 +302,7 @@ class REPL:
     async def _handle_failures(self, args: str) -> None:
         error_type = args.strip() or None
         try:
-            failures = await get_failures(
-                settings.tenant_id, limit=20, error_type=error_type
-            )
+            failures = await get_failures(settings.tenant_id, limit=20, error_type=error_type)
         except Exception as e:
             render_error(str(e))
             return
@@ -380,9 +377,7 @@ class REPL:
                     f"[dim]Session {sess.name}[/dim] — retomar depois com /session {sess.name}"
                 )
         else:
-            console.print(
-                f"[dim]Session {sess.name} resumed ({len(sess.context)} messages)[/dim]"
-            )
+            console.print(f"[dim]Session {sess.name} resumed ({len(sess.context)} messages)[/dim]")
         console.print("[dim]Type /help for commands, Ctrl+C to exit[/dim]\n")
 
         cron_mgr = CronManager()
@@ -401,9 +396,7 @@ class REPL:
                     else:
                         console.print(f"[dim][cron] Running: {job.prompt[:60]}...[/dim]")
                         try:
-                            with console.status(
-                                f"[bold cyan]Cron: {job.id}...", spinner="dots"
-                            ):
+                            with console.status(f"[bold cyan]Cron: {job.id}...", spinner="dots"):
                                 resp = await self._ask_llm(
                                     "You are a learning agent. Execute the task.",
                                     job.prompt,
@@ -422,9 +415,7 @@ class REPL:
                             )
                         except Exception as e:
                             error_type, error_message = extract_llm_error(e)
-                            console.print(
-                                f"[dim][cron] Failed: {job.id} ({error_type})[/dim]"
-                            )
+                            console.print(f"[dim][cron] Failed: {job.id} ({error_type})[/dim]")
                             await self._trace_outcome(
                                 "cron",
                                 job.id,
@@ -449,9 +440,7 @@ class REPL:
                         render_health(results)
                     elif cmd == "cost":
                         msgs = self._session_mgr.current().context
-                        user_chars = sum(
-                            len(m["content"]) for m in msgs if m["role"] == "user"
-                        )
+                        user_chars = sum(len(m["content"]) for m in msgs if m["role"] == "user")
                         assistant_chars = sum(
                             len(m["content"]) for m in msgs if m["role"] == "assistant"
                         )
@@ -487,13 +476,13 @@ class REPL:
                                 mode = f"script={script}" if script else "agent"
                                 console.print(
                                     f"[green]Cron job scheduled:[/green] [{job.id}] every "
-                                    f"{interval} ({mode}) — \"{job.prompt[:50]}...\""
+                                    f'{interval} ({mode}) — "{job.prompt[:50]}..."'
                                 )
                             else:
                                 console.print(
-                                    "[red]Usage:[/red] /cron add <interval> \"<prompt>\"\n"
+                                    '[red]Usage:[/red] /cron add <interval> "<prompt>"\n'
                                     "  /cron add <interval> --no-agent --script <file.sh>\n"
-                                    "Example: /cron add 1h \"busque sobre SRE\""
+                                    'Example: /cron add 1h "busque sobre SRE"'
                                 )
                         else:
                             result = dispatch(cmd, args)
