@@ -7,6 +7,7 @@ from neo4j_graphrag.types import RetrieverResultItem
 from mi_dream.config import settings
 from mi_dream.knowledge.models import Strategy
 from mi_dream.memory.embeddings import build_embedder
+from mi_dream.security.tenant import TenantContext
 
 RETRIEVAL_QUERY = """
 OPTIONAL MATCH (node)-[:SUPERSEDES]->(succ:Strategy)
@@ -84,7 +85,7 @@ class StrategyVectorRetriever:
             retriever.search,
             query_text=goal,
             top_k=top_k or self._top_k,
-            filters={"tenant_id": tenant_id, "state": "ACTIVE", "domain": domain},
+            filters={"tenant_id": tenant_id, "state": "ACTIVE"},
         )
         strategies = []
         for item in result.items:

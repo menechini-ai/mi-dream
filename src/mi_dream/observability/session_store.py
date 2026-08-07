@@ -1,0 +1,100 @@
+"""SessionStore abstraction — local filesystem now, distributed backends later."""
+
+from __future__ import annotations
+
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+from datetime import datetime
+from json import JSONDecodeError
+from pathlib import Path
+from typing import Any
+from uuid import uuid4
+
+
+@dataclass
+class Session:
+    name: str
+    context: list[dict[str, str]] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=lambda: datetime.now().isoformat())
+    updated_at: str = field(default_factory=lambda: datetime.now().isoformat())
+
+
+class SessionStore(ABC):
+    """Abstract session store. Implementations: LocalFileSessionStore, (future) RedisSessionStore."""
+
+    @abstractmethod
+    def create(self, name: str = "default") -> Session: ...
+
+    @abstractmethod
+    def resume(self, name: str) -> Session: ...
+
+    @abstractmethod
+    def current(self) -> Session: ...
+
+    @abstractmethod
+    def add_message(self, role: str, content: str) -> None: ...
+
+    @abstractmethod
+    def clear_context(self) -> None: ...
+
+    @abstractmethod
+    def save(self) -> None: ...
+
+    @abstractmethod
+    def list_sessions(self) -> list[str]: ...
+
+
+class LocalFileSessionStore(SessionStore):
+    """Filesystem-backed session store (~/.midream/sessions/*.json)."""
+
+    def __init__(self, session_dir: Path | None = None):
+        self._session_dir = session_dir or Path.home() / ".midream" / "sessions"
+        self._session_dir.mkdir(parents=True, exist_ok=True)
+        self._current: Session | None = None
+
+    def create(self, name: str = "default") -> Session:
+        self._current = Session(name=name)
+        return self._current
+
+    def resume(self, name: str) -> Session:
+        path = self._session_dir / f"{name}.json"
+        if path.exists():
+            try:
+                data = json.loads(path.read_text())
+                self._current = Session(**data)
+            except (JSONDecodeError, TypeError):
+                self._current = Session(name=name)
+        else:
+            self._current = Session(name=name)
+        return self._current
+
+    def current(self) -> Session:
+        if not self._current:
+            return self.create()
+        return self._current
+
+    def add_message(self, role: str, content: str) -> None:
+        session = self.current()
+        session.context.append(
+            {"role": role, "content": content, "ts": datetime.now().isoformat()}
+        )
+        session.updated_at = datetime.now().isoformat()
+
+    def clear_context(self) -> None:
+        session = self.current()
+        session.context = []
+        session.updated_at = datetime.now().isoformat()
+
+    def save(self) -> None:
+        if not self._current:
+            return
+        path = self._session_dir / f"{self._current.name}.json"
+        path.write_text(json.dumps(self._current.__dict__, indent=2))
+
+    def list_sessions(self) -> list[str]:
+        return [f.stem for f in self._session_dir.glob("*.json")]
+
+
+# Backward compat alias — existing code using SessionManager continues to work.
+SessionManager = LocalFileSessionStore

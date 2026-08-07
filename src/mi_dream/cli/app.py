@@ -91,9 +91,14 @@ def learn(
     async def _run() -> None:
         while True:
             report = await run_learning_cycle()
-            typer.echo(f"Learn: {report}")
+            processed = report.get("reflection", {}).get("traces_processed", 0)
+            if processed == 0:
+                typer.echo("Learn: nothing to process (no traces in queue)")
+            else:
+                typer.echo(f"Learn: {report}")
             if once:
                 return
+            typer.echo(f"Sleeping {interval_minutes}m... (Ctrl+C to stop)")
             await asyncio.sleep(interval_minutes * 60)
 
     asyncio.run(_run())
@@ -101,24 +106,33 @@ def learn(
 
 @app.command()
 def review(
-    once: bool = typer.Option(False, "--once", help="Run a single daily review and exit"),
+    once: bool = typer.Option(True, "--once/--daemon", help="Run once and exit (default) or loop as daemon"),
 ):
     """Run the daily review (stats + integrity + LLM summary).
 
-    Daemon loop by default; use --once for a single review.
+    Default: single run and exit. Use --daemon for continuous loop.
     """
     from datetime import date, datetime
 
     async def _run() -> None:
-        while True:
+        if once:
             today = date.today().isoformat()
-            if once or daily_review_due(
+            if daily_review_due(
                 datetime.now().hour, await reviewed_dates(), today
             ):
                 report = await run_daily_review()
                 typer.echo(f"Daily review: {report}")
-            if once:
-                return
+            else:
+                typer.echo("Daily review: not due yet (already reviewed today)")
+            return
+        while True:
+            today = date.today().isoformat()
+            if daily_review_due(
+                datetime.now().hour, await reviewed_dates(), today
+            ):
+                report = await run_daily_review()
+                typer.echo(f"Daily review: {report}")
+            typer.echo("Sleeping 1h... (Ctrl+C to stop)")
             await asyncio.sleep(3600)
 
     asyncio.run(_run())

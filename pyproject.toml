@@ -21,6 +21,8 @@ dependencies = [
     "prompt-toolkit>=3.0",
     "typer>=0.15",
     "neo4j-graphrag>=1.18.0",
+    "sentence-transformers>=5.7.0",
+    "torch>=2.13.0",
 ]
 
 [project.scripts]
