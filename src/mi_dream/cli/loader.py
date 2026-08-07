@@ -58,14 +58,6 @@ def _parse_frontmatter(text: str) -> tuple[dict, str]:
     return {}, text.strip()
 
 
-def _resolve_agents_dir() -> str:
-    midream = Path(".midream/agents")
-    if midream.is_dir() and any(midream.glob("*.yaml")):
-        return str(midream)
-    src = Path(__file__).resolve().parent.parent / "agents"
-    return str(src)
-
-
 @functools.lru_cache(maxsize=2)
 def load_skills() -> list[dict]:
     return _load_skill_dirs(settings.skills_dir)
@@ -73,4 +65,4 @@ def load_skills() -> list[dict]:
 
 @functools.lru_cache(maxsize=2)
 def load_agents() -> list[dict]:
-    return _load_yaml_files(_resolve_agents_dir())
+    return _load_yaml_files(settings.agents_dir)

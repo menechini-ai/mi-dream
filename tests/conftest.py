@@ -9,6 +9,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../src"))
 
 _FIXTURES = Path(__file__).resolve().parent / "fixtures"
 os.environ["SKILLS_DIR"] = str(_FIXTURES / "skills")
+os.environ["AGENTS_DIR"] = str(_FIXTURES / "agents")
 os.environ.setdefault("LLM_API_KEY", "test-key-not-used")
 os.environ.setdefault("LLM_BASE_URL", "http://localhost:9")
 
