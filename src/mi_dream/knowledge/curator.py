@@ -1,6 +1,7 @@
 from neo4j import AsyncSession
 
 from mi_dream.knowledge.models import Strategy
+from mi_dream.observability import get_metrics
 
 INTEGRITY_CHECKS = [
     # KM-002: Strategy ACTIVE must have at least one SUPPORTED_BY lesson
@@ -85,6 +86,34 @@ class Curator:
                 )
         return violations
 
+    async def validate_transitions(self, tenant_id: str) -> list[dict]:
+        """P2: detect invalid state transitions using VALID_TRANSITIONS."""
+        from mi_dream.knowledge.models import VALID_TRANSITIONS, StrategyState
+
+        result = await self._session.run(
+            """
+            MATCH (s:Strategy {tenant_id: $tenant_id})-[:SUPERSEDES]->(next:Strategy)
+            RETURN s.id AS from_id, s.state AS from_state, next.id AS to_id, next.state AS to_state
+            """,
+            tenant_id=tenant_id,
+        )
+        violations = []
+        async for rec in result:
+            try:
+                from_state = StrategyState(rec["from_state"])
+                to_state = StrategyState(rec["to_state"])
+                if to_state not in VALID_TRANSITIONS.get(from_state, []):
+                    violations.append({
+                        "from_id": rec["from_id"],
+                        "to_id": rec["to_id"],
+                        "from_state": rec["from_state"],
+                        "to_state": rec["to_state"],
+                        "reason": f"Invalid transition {rec['from_state']} -> {rec['to_state']}",
+                    })
+            except ValueError:
+                pass
+        return violations
+
     async def run_state_machine(self, tenant_id: str) -> dict:
         promoted = 0
         demoted = 0
@@ -165,4 +194,23 @@ class Curator:
             """,
             tenant_id=tenant_id,
         )
-        return [Strategy(**r["s"]) async for r in result]
+        promoted = [Strategy(**r["s"]) async for r in result]
+        get_metrics().increment("strategies_promoted", len(promoted))
+        return promoted
+
+    @staticmethod
+    def wilson_ci(successes: int, trials: int, z: float = 1.96) -> tuple[float, float]:
+        """Wilson score confidence interval for binomial proportion.
+
+        Gives a statistically sound confidence bound even for small sample sizes.
+        P2: future use — replace the simple ``success_rate >= 0.6`` gate with a
+        Wilson lower bound check so Strategy A (3/5) is not treated as confidently
+        as Strategy B (300/500) when both show 60%.
+        """
+        if trials == 0:
+            return (0.0, 0.0)
+        p = successes / trials
+        denom = 1 + z * z / trials
+        centre = (p + z * z / (2 * trials)) / denom
+        spread = z * ((p * (1 - p) + z * z / (4 * trials)) / trials) ** 0.5 / denom
+        return (max(0.0, centre - spread), min(1.0, centre + spread))

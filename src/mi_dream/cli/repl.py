@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from datetime import date, datetime
 from pathlib import Path
 from uuid import uuid4
@@ -10,6 +11,8 @@ from prompt_toolkit.key_binding import KeyBindings
 from mi_dream.agents.loop import run_tool_loop
 from mi_dream.agents.toolbox import build_chat_toolbox
 from mi_dream.agents.tools import save_reasoning_trace
+from mi_dream.observability import get_logger, get_metrics
+from mi_dream.security.tenant import TenantContext, tenant_from_str
 from mi_dream.cli.commands import COMMANDS, dispatch
 from mi_dream.cli.completer import SlashCompleter
 from mi_dream.cli.cron import CronManager
@@ -216,7 +219,8 @@ class REPL:
             )
             self._traces_since_learn += 1
         except Exception:
-            pass
+            logger.exception("trace_persist_failed")
+            get_metrics().increment("learning_cycle_failures")
 
     async def _run_prompt(self, label: str, name: str, system_prompt: str, user_input: str) -> None:
         self._session_mgr.add_message("user", user_input)
@@ -289,7 +293,8 @@ class REPL:
         try:
             await run_learning_cycle()
         except Exception:
-            pass
+            logger.exception("auto_learning_cycle_failed")
+            get_metrics().increment("learning_cycle_failures")
 
     async def _maybe_auto_learn(self) -> None:
         """Disparo por contexto (SDD §20.2): aprende a cada N traces."""
@@ -367,7 +372,8 @@ class REPL:
             try:
                 await run_learning_cycle()
             except Exception:
-                pass
+                logger.exception("auto_learning_cycle_failed")
+                get_metrics().increment("learning_cycle_failures")
 
     async def run(self) -> None:
         try:
@@ -600,7 +606,8 @@ class REPL:
             try:
                 await run_learning_cycle()
             except Exception:
-                pass
+                logger.exception("auto_learning_cycle_failed")
+                get_metrics().increment("learning_cycle_failures")
         self._session_mgr.save()
         sess = self._session_mgr.current()
         console.print(f"\n[bold]Session {sess.name} saved. Goodbye![/bold]")

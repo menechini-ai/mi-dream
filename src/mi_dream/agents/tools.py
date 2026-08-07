@@ -1,4 +1,5 @@
 import json
+import logging
 
 from langchain_core.tools import tool
 
@@ -8,7 +9,10 @@ from mi_dream.knowledge.router import ExecutionContext, StrategyRouter
 from mi_dream.knowledge.vector import StrategyVectorRetriever
 from mi_dream.memory.connection import get_driver
 from mi_dream.memory.reasoning import trace_fingerprint
+from mi_dream.observability import get_logger, get_metrics
 from mi_dream.security.sanitizer import sanitize
+
+logger = get_logger("agents.tools")
 
 
 async def recall_strategy(

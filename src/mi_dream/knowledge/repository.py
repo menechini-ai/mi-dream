@@ -1,6 +1,7 @@
 from neo4j import AsyncSession
 
 from mi_dream.knowledge.models import Strategy, StrategyCreate, StrategyState
+from mi_dream.security.tenant import TenantContext, tenant_from_str
 
 
 class StrategyRepository:
@@ -48,8 +49,9 @@ class StrategyRepository:
         return Strategy(**record["s"]) if record else None
 
     async def list_by_domain(
-        self, domain: str, tenant_id: str, state: StrategyState | None = None
+        self, domain: str, tenant: TenantContext | str, state: StrategyState | None = None
     ) -> list[Strategy]:
+        tenant_id = tenant.id if isinstance(tenant, TenantContext) else tenant
         if state:
             result = await self._session.run(
                 "MATCH (s:Strategy {domain: $domain, tenant_id: $tenant_id, "

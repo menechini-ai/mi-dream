@@ -7,6 +7,7 @@ from neo4j_graphrag.types import RetrieverResultItem
 from mi_dream.config import settings
 from mi_dream.knowledge.models import Strategy
 from mi_dream.memory.embeddings import build_embedder
+from mi_dream.security.tenant import TenantContext
 
 RETRIEVAL_QUERY = """
 OPTIONAL MATCH (node)-[:SUPERSEDES]->(succ:Strategy)
