@@ -5,6 +5,7 @@ import typer
 from mi_dream.cli.repl import REPL
 from mi_dream.cli.session import SessionManager
 from mi_dream.config import settings
+from mi_dream.learning.failure_analyzer import get_failures
 from mi_dream.learning.reviewer import (
     daily_review_due,
     reviewed_dates,
@@ -121,6 +122,33 @@ def review(
             await asyncio.sleep(3600)
 
     asyncio.run(_run())
+
+
+@app.command()
+def failures(
+    limit: int = typer.Option(20, "--limit", "-n", help="Max failures to list"),
+    error_type: str | None = typer.Option(None, "--type", help="Filter by error type"),
+    source: str | None = typer.Option(
+        None, "--source", help="Filter by source (chat|skill|agent|cron)"
+    ),
+):
+    """List persisted LLM failures (ReasoningTrace outcome=failure)."""
+
+    async def _run() -> list[dict]:
+        return await get_failures(
+            settings.tenant_id, limit=limit, error_type=error_type, source=source
+        )
+
+    rows = asyncio.run(_run())
+    if not rows:
+        typer.echo("No failures recorded.")
+        return
+    for row in rows:
+        created = str(row.get("created_at") or "")[:19]
+        typer.echo(
+            f"[{created}] {row['error_type']} ({row['source']}): "
+            f"{row['error_message'][:120]}"
+        )
 
 
 @app.command()

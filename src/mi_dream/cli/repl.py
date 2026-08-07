@@ -17,6 +17,7 @@ from mi_dream.cli.renderer import (
     render_agents,
     render_commands,
     render_error,
+    render_failures,
     render_health,
     render_message,
     render_skills,
@@ -29,13 +30,14 @@ from mi_dream.knowledge.repository import StrategyRepository
 from mi_dream.knowledge.router import ExecutionContext, StrategyRouter
 from mi_dream.knowledge.vector import StrategyVectorRetriever
 from mi_dream.learning.compactor import ConversationCompactor
+from mi_dream.learning.failure_analyzer import get_failures
 from mi_dream.learning.reviewer import (
     daily_review_due,
     reviewed_dates,
     run_daily_review,
 )
 from mi_dream.learning.scheduler import run_learning_cycle
-from mi_dream.llm.client import ask_llm_full
+from mi_dream.llm.client import ask_llm_full, extract_llm_error
 from mi_dream.memory.connection import get_driver
 
 HISTORY_PATH = str(Path.cwd() / ".midream" / "history")
@@ -138,26 +140,82 @@ class REPL:
                 self._running = False
                 event.app.exit()
 
+    async def _ask_llm(self, system: str, user: str, history: list[dict]):
+        return await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: ask_llm_full(
+                system=system,
+                user_message=user,
+                max_tokens=settings.llm_max_tokens,
+                history=history,
+            ),
+        )
+
+    async def _trace_outcome(
+        self,
+        source: str,
+        name: str,
+        content: str,
+        outcome: str,
+        error_type: str | None = None,
+        error_message: str | None = None,
+        tokens: int = 0,
+        latency_ms: float = 0.0,
+    ) -> None:
+        """Persist a ReasoningTrace with real outcome (SDD §23); never raises."""
+        try:
+            metadata = {
+                "tenant_id": settings.tenant_id,
+                "outcome": outcome,
+                "source": source,
+                "name": name,
+                "error_type": error_type,
+                "error_message": error_message,
+                "tokens": tokens,
+                "latency_ms": round(latency_ms, 1),
+            }
+            await save_reasoning_trace(
+                trace_id=f"cli-{uuid4().hex}",
+                content=content,
+                metadata=metadata,
+                driver=get_driver(),
+            )
+            self._traces_since_learn += 1
+        except Exception:
+            pass
+
     async def _run_prompt(self, label: str, name: str, system_prompt: str, user_input: str) -> None:
         self._session_mgr.add_message("user", user_input)
-
-        with console.status(f"[bold cyan]{label}: {name}...", spinner="dots"):
-            resp = await asyncio.get_event_loop().run_in_executor(
-                None,
-                lambda: ask_llm_full(
-                    system=system_prompt,
-                    user_message=user_input,
-                    max_tokens=settings.llm_max_tokens,
-                    history=[
-                        {"role": m["role"], "content": m["content"]}
-                        for m in self._session_mgr.current().context
-                    ],
-                ),
+        history = [
+            {"role": m["role"], "content": m["content"]}
+            for m in self._session_mgr.current().context[:-1]
+        ]
+        try:
+            with console.status(f"[bold cyan]{label}: {name}...", spinner="dots"):
+                resp = await self._ask_llm(system_prompt, user_input, history)
+            assistant_msg = resp.content
+            self._session_mgr.add_message("assistant", assistant_msg)
+            render_message("assistant", assistant_msg)
+            render_status(settings.llm_model, resp.total_tokens, format_latency(resp.latency_ms))
+            await self._trace_outcome(
+                label.lower(),
+                name,
+                f"Q: {user_input}\nA: {assistant_msg}",
+                "success",
+                tokens=resp.total_tokens,
+                latency_ms=resp.latency_ms,
             )
-        assistant_msg = resp.content
-        self._session_mgr.add_message("assistant", assistant_msg)
-        render_message("assistant", assistant_msg)
-        render_status(settings.llm_model, resp.total_tokens, format_latency(resp.latency_ms))
+        except Exception as e:
+            error_type, error_message = extract_llm_error(e)
+            render_error(f"{error_message} ({error_type})")
+            await self._trace_outcome(
+                label.lower(),
+                name,
+                f"Q: {user_input}\nA: [ERROR: {error_message}]",
+                "failure",
+                error_type=error_type,
+                error_message=error_message,
+            )
 
     async def _run_with_skill(self, skill: dict, user_input: str) -> None:
         await self._run_prompt("Skill", skill["name"], skill["prompt"], user_input)
@@ -229,6 +287,20 @@ class REPL:
             report = await run_daily_review()
         console.print(f"[green]Daily review:[/green] {report}")
         self._reviewed_dates.add(date.today().isoformat())
+
+    async def _handle_failures(self, args: str) -> None:
+        error_type = args.strip() or None
+        try:
+            failures = await get_failures(
+                settings.tenant_id, limit=20, error_type=error_type
+            )
+        except Exception as e:
+            render_error(str(e))
+            return
+        if not failures:
+            console.print("[dim]No failures recorded.[/dim]")
+            return
+        render_failures(failures)
 
     async def _daily_review(self) -> None:
         """Hora fixa + catch-up (SDD §22.4): revisa se já passou da hora e o dia
@@ -302,19 +374,39 @@ class REPL:
                         )
                     else:
                         console.print(f"[dim][cron] Running: {job.prompt[:60]}...[/dim]")
-                        with console.status(f"[bold cyan]Cron: {job.id}...", spinner="dots"):
-                            resp = await asyncio.get_event_loop().run_in_executor(
-                                None,
-                                lambda: ask_llm_full(
-                                    system="You are a learning agent. Execute the task.",
-                                    user_message=job.prompt,
-                                    max_tokens=settings.llm_max_tokens,
-                                    history=[],
-                                ),
+                        try:
+                            with console.status(
+                                f"[bold cyan]Cron: {job.id}...", spinner="dots"
+                            ):
+                                resp = await self._ask_llm(
+                                    "You are a learning agent. Execute the task.",
+                                    job.prompt,
+                                    [],
+                                )
+                            console.print(
+                                f"[dim][cron] Done: {job.id} ({resp.total_tokens} tokens)[/dim]"
                             )
-                        console.print(
-                            f"[dim][cron] Done: {job.id} ({resp.total_tokens} tokens)[/dim]"
-                        )
+                            await self._trace_outcome(
+                                "cron",
+                                job.id,
+                                f"Task: {job.prompt}\nA: {resp.content[:2000]}",
+                                "success",
+                                tokens=resp.total_tokens,
+                                latency_ms=resp.latency_ms,
+                            )
+                        except Exception as e:
+                            error_type, error_message = extract_llm_error(e)
+                            console.print(
+                                f"[dim][cron] Failed: {job.id} ({error_type})[/dim]"
+                            )
+                            await self._trace_outcome(
+                                "cron",
+                                job.id,
+                                f"Task: {job.prompt}\nA: [ERROR: {error_message}]",
+                                "failure",
+                                error_type=error_type,
+                                error_message=error_message,
+                            )
                     cron_mgr.mark_run(job.id)
 
                 user_input = await prompt_session.prompt_async("\n❯ ")
@@ -355,6 +447,8 @@ class REPL:
                         await self._handle_learn()
                     elif cmd == "review":
                         await self._handle_review()
+                    elif cmd == "failures":
+                        await self._handle_failures(args)
                     elif cmd in COMMANDS:
                         if cmd == "cron" and args.startswith("add "):
                             cron_mgr = CronManager()
@@ -419,34 +513,37 @@ class REPL:
                     for m in self._session_mgr.current().context[:-1]
                 ]
 
-                with console.status("[bold cyan]Thinking...", spinner="dots"):
-                    resp = await asyncio.get_event_loop().run_in_executor(
-                        None,
-                        lambda: ask_llm_full(
-                            system=system_prompt,
-                            user_message=user_input,
-                            max_tokens=settings.llm_max_tokens,
-                            history=history,
-                        ),
-                    )
-                assistant_msg = resp.content
-
-                self._session_mgr.add_message("assistant", assistant_msg)
-                render_message("assistant", assistant_msg)
-                render_status(
-                    settings.llm_model, resp.total_tokens, format_latency(resp.latency_ms)
-                )
-
                 try:
-                    await save_reasoning_trace(
-                        trace_id=f"cli-{uuid4().hex}",
-                        content=f"Q: {user_input}\nA: {assistant_msg}",
-                        metadata={"tenant_id": settings.tenant_id, "outcome": "success"},
-                        driver=get_driver(),
+                    with console.status("[bold cyan]Thinking...", spinner="dots"):
+                        resp = await self._ask_llm(system_prompt, user_input, history)
+                    assistant_msg = resp.content
+
+                    self._session_mgr.add_message("assistant", assistant_msg)
+                    render_message("assistant", assistant_msg)
+                    render_status(
+                        settings.llm_model,
+                        resp.total_tokens,
+                        format_latency(resp.latency_ms),
                     )
-                    self._traces_since_learn += 1
-                except Exception:
-                    pass
+                    await self._trace_outcome(
+                        "chat",
+                        "",
+                        f"Q: {user_input}\nA: {assistant_msg}",
+                        "success",
+                        tokens=resp.total_tokens,
+                        latency_ms=resp.latency_ms,
+                    )
+                except Exception as e:
+                    error_type, error_message = extract_llm_error(e)
+                    render_error(f"{error_message} ({error_type})")
+                    await self._trace_outcome(
+                        "chat",
+                        "",
+                        f"Q: {user_input}\nA: [ERROR: {error_message}]",
+                        "failure",
+                        error_type=error_type,
+                        error_message=error_message,
+                    )
                 await self._maybe_auto_learn()
                 await self._maybe_auto_compact()
 

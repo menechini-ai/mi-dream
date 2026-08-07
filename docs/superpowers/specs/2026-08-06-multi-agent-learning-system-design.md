@@ -643,3 +643,55 @@ Revisão diária automatizada ("daily") do que foi aprendido e produzido no dia:
 | `uv run mi-dream review [--once]` | CLI | revisão imediata; daemon diário sem `--once` |
 
 ---
+
+## 23. Monitoramento de Falhas (v2.5)
+
+### 23.1 Objetivo
+
+Tornar falhas de execução visíveis e aprendizáveis. Toda chamada LLM que falha (chat, skill, agent, cron) persiste um `ReasoningTrace` com `outcome="failure"` e detalhes estruturados do erro; o REPL e a CLI expõem `failures` para inspeção e a análise agrega por tipo. Falhas já recebem bônus no `Evaluator` (§12/§20.3, +0.3) — persistir a falha alimenta o pipeline de reflexão.
+
+### 23.2 Componentes
+
+- `extract_llm_error(exc) -> (error_type, message)` — `llm/client.py`: classifica exceções do SDK OpenAI/builtins em tipo curto (`connection_error`, `timeout_error`, `rate_limit_error`, `auth_error`, `permission_error`, `api_error`, `config_error`, `unknown_error`) com mensagem truncada (300 chars).
+- `save_reasoning_trace` (agent/tools) — além de `outcome`, grava propriedades `error_type` e `error_source` no nó (nullable), habilitando filtro Cypher sem parse de JSON.
+- `get_failures(tenant_id, limit=20, error_type=None, source=None) -> list[dict]` — `learning/failure_analyzer.py`: consulta `(:ReasoningTrace {outcome:"failure"})` mais recentes primeiro; opcionalmente filtra por `t.error_type` e `t.error_source`.
+- `render_failures(failures)` — `cli/renderer.py`: tabela `Quando | Tipo | Source | Erro | Tokens`.
+- Handler `/failures [error_type]` no REPL + comando `mi-dream failures`.
+
+### 23.3 Instrumentação (`repl.py`)
+
+Todos os caminhos LLM usam um helper comum:
+
+- `_ask_llm(system, user, history)` — executa `ask_llm_full` no executor (único ponto de chamada).
+- `_trace_outcome(source, name, content, outcome, error_type=None, error_message=None, tokens=0, latency_ms=0.0)` — persiste o trace (nunca levanta, sanitize §18.2) e incrementa `_traces_since_learn` tanto em sucesso quanto em falha.
+
+| Caminho | `source` | `outcome=success` | `outcome=failure` |
+|---|---|---|---|
+| chat regular | `chat` | conteúdo normal | `[ERROR: msg]` no content + `error_type`/`error_message` |
+| `/skill` | `skill` | idem | idem |
+| `@agent` | `agent` | idem | idem |
+| cron job | `cron` | idem | idem |
+
+Em falha: `render_error` mostra a mensagem e o loop continua (degradação graciosa, §13).
+
+### 23.4 Filtros e agrupamento
+
+- `t.error_type` e `t.error_source` são propriedades no nó (Cypher paramétrico, INV-001).
+- Nós criados antes da v2.5 não têm as propriedades → `get_failures` faz fallback para `metadata.error_type`/`metadata.source` e retorna `"unknown"`.
+- `error_type` aceita: `connection_error`, `timeout_error`, `rate_limit_error`, `auth_error`, `permission_error`, `api_error`, `config_error`, `unknown_error`.
+- `source` aceita: `chat`, `skill`, `agent`, `cron`.
+
+### 23.5 Interfaces
+
+| Comando | Onde | Efeito |
+|---|---|---|
+| `/failures [error_type]` | REPL | tabela com as últimas 20 falhas (filtra por tipo se passado) |
+| `uv run mi-dream failures [--limit N] [--type T] [--source S]` | CLI | lista de falhas persistidas |
+
+### 23.6 Invariantes
+
+- Falha de LLM **nunca** aborta o REPL: apenas `render_error` + trace de falha (INV: degradação graciosa).
+- `_trace_outcome` nunca levanta (qualquer exceção de persistência é engolida).
+- `content` do trace de falha é PII-sanitizado (§18.2); `error_message` não contém secrets (origem: exceção, truncada).
+
+---

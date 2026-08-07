@@ -173,3 +173,38 @@ def test_review_runs_once():
     mock_review.assert_awaited_once()
 
 
+def test_failures_lists_persisted_failures():
+    from unittest.mock import AsyncMock
+
+    fake = [
+        {
+            "id": "t1",
+            "created_at": "2026-08-07T10:00:00Z",
+            "error_type": "api_error",
+            "source": "skill",
+            "error_message": "boom",
+            "tokens": 9,
+        }
+    ]
+    with patch(
+        "mi_dream.cli.app.get_failures", new=AsyncMock(return_value=fake)
+    ) as mock_get:
+        result = runner.invoke(app, ["failures", "--limit", "5", "--type", "api_error"])
+
+    assert result.exit_code == 0
+    assert "api_error" in result.stdout
+    assert "boom" in result.stdout
+    assert mock_get.call_args.kwargs["limit"] == 5
+    assert mock_get.call_args.kwargs["error_type"] == "api_error"
+
+
+def test_failures_empty():
+    from unittest.mock import AsyncMock
+
+    with patch("mi_dream.cli.app.get_failures", new=AsyncMock(return_value=[])):
+        result = runner.invoke(app, ["failures"])
+
+    assert result.exit_code == 0
+    assert "No failures" in result.stdout
+
+

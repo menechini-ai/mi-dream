@@ -1,6 +1,8 @@
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from mi_dream.cli.loader import load_agents, load_skills
+
 
 @dataclass
 class SlashCommand:
@@ -10,20 +12,11 @@ class SlashCommand:
 
 
 def _handle_skills(args: str) -> list[dict]:
-    return [
-        {"name": "brainstorming", "desc": "Design exploration"},
-        {"name": "systematic-debugging", "desc": "Bug investigation"},
-        {"name": "test-driven-development", "desc": "TDD workflow"},
-        {"name": "writing-plans", "desc": "Implementation planning"},
-    ]
+    return load_skills()
 
 
 def _handle_agents(args: str) -> list[dict]:
-    return [
-        {"name": "Research", "desc": "Codebase exploration and research"},
-        {"name": "Implementation", "desc": "Code writing and refactoring"},
-        {"name": "Review", "desc": "Code review and quality checks"},
-    ]
+    return load_agents()
 
 
 def _handle_commands(args: str) -> list[dict]:
@@ -42,6 +35,7 @@ Slash commands:
   /help          Show this help
   /session <n>   Create or resume session <n>
   /clear         Clear session context
+  /failures [t]  Show last failed LLM calls (optional error type)
   /exit          Exit the CLI
 
 Regular input is sent to the Supervisor agent."""
@@ -75,6 +69,10 @@ def _handle_learn(args: str) -> str:
 
 def _handle_review(args: str) -> str:
     return "Run /review in REPL (or `mi-dream review`) for the daily review."
+
+
+def _handle_failures(args: str) -> str:
+    return "Run /failures in REPL (or `mi-dream failures`) to list LLM failures."
 
 
 def _handle_cron(args: str) -> str:
@@ -115,6 +113,7 @@ COMMANDS: dict[str, SlashCommand] = {
     "cost": SlashCommand("cost", "Session cost estimate", _handle_cost),
     "learn": SlashCommand("learn", "Run a learning cycle", _handle_learn),
     "review": SlashCommand("review", "Run the daily review", _handle_review),
+    "failures": SlashCommand("failures", "List failed LLM calls", _handle_failures),
 }
 
 

@@ -365,3 +365,156 @@ async def test_repl_review_command_runs_daily_review(tmp_path):
 
     mock_review.assert_awaited_once()
     assert "2026-08-07" in repl._reviewed_dates
+
+
+@pytest.mark.asyncio
+async def test_repl_run_prompt_success_saves_success_trace(tmp_path):
+    from mi_dream.cli.repl import REPL
+    from mi_dream.llm.client import LLMResponse
+
+    mgr = SessionManager(session_dir=tmp_path)
+    mgr.create("s1")
+    repl = REPL(mgr)
+    captured = {}
+
+    async def fake_save(trace_id, content, metadata, driver):
+        captured["metadata"] = metadata
+        captured["content"] = content
+
+    with patch(
+        "mi_dream.cli.repl.ask_llm_full",
+        return_value=LLMResponse("oi", total_tokens=10, latency_ms=50),
+    ), patch("mi_dream.cli.repl.save_reasoning_trace", new=fake_save), patch(
+        "mi_dream.cli.repl.render_message"
+    ), patch("mi_dream.cli.repl.render_status"), patch("mi_dream.cli.repl.console"):
+        await repl._run_prompt("Skill", "brainstorming", "sys", "hello")
+
+    assert captured["metadata"]["outcome"] == "success"
+    assert captured["metadata"]["source"] == "skill"
+    assert captured["metadata"]["name"] == "brainstorming"
+    assert captured["metadata"]["tokens"] == 10
+    assert repl._traces_since_learn == 1
+    assert mgr.current().context[-1]["role"] == "assistant"
+
+
+@pytest.mark.asyncio
+async def test_repl_run_prompt_failure_saves_failure_trace(tmp_path):
+    from mi_dream.cli.repl import REPL
+
+    mgr = SessionManager(session_dir=tmp_path)
+    mgr.create("s1")
+    repl = REPL(mgr)
+    captured = {}
+
+    async def fake_save(trace_id, content, metadata, driver):
+        captured["metadata"] = metadata
+        captured["content"] = content
+
+    with patch(
+        "mi_dream.cli.repl.ask_llm_full", side_effect=ConnectionError("provider unreachable")
+    ), patch("mi_dream.cli.repl.save_reasoning_trace", new=fake_save), patch(
+        "mi_dream.cli.repl.render_error"
+    ) as mock_render_error, patch("mi_dream.cli.repl.render_message"), patch(
+        "mi_dream.cli.repl.render_status"
+    ), patch("mi_dream.cli.repl.console"):
+        await repl._run_prompt("Skill", "brainstorming", "sys", "hello")
+
+    assert captured["metadata"]["outcome"] == "failure"
+    assert captured["metadata"]["error_type"] == "connection_error"
+    assert "provider unreachable" in captured["metadata"]["error_message"]
+    assert repl._traces_since_learn == 1
+    mock_render_error.assert_called_once()
+    assert mgr.current().context[-1]["role"] == "user"
+
+
+@pytest.mark.asyncio
+async def test_repl_chat_failure_persists_and_continues(tmp_path):
+    from unittest.mock import AsyncMock, MagicMock
+
+    from mi_dream.cli.repl import REPL
+    from mi_dream.knowledge.router import ExecutionContext
+
+    inputs = iter(["oi", "tchau"])
+
+    async def fake_prompt(*args, **kwargs):
+        try:
+            return next(inputs)
+        except StopIteration:
+            raise SystemExit
+
+    captured = []
+
+    async def fake_save(trace_id, content, metadata, driver):
+        captured.append(metadata)
+
+    with patch("mi_dream.cli.repl.PromptSession") as MockPS, patch(
+        "mi_dream.cli.repl.ask_llm_full", side_effect=ConnectionError("boom")
+    ) as mock_llm, patch("mi_dream.cli.repl.save_reasoning_trace", new=fake_save), patch(
+        "mi_dream.cli.repl.recall_context",
+        new=AsyncMock(return_value=ExecutionContext(goal="oi")),
+    ), patch(
+        "mi_dream.cli.repl.run_learning_cycle", new=AsyncMock(return_value={})
+    ), patch(
+        "mi_dream.cli.repl.reviewed_dates", new=AsyncMock(return_value=set())
+    ), patch("mi_dream.cli.repl.render_error"), patch("mi_dream.cli.repl.console"):
+        MockPS.return_value = MagicMock()
+        MockPS.return_value.prompt_async = fake_prompt
+        mgr = SessionManager(session_dir=tmp_path)
+        mgr.create("s1")
+        await REPL(mgr).run()
+
+    assert mock_llm.call_count == 2
+    assert len(captured) == 2
+    assert all(m["outcome"] == "failure" for m in captured)
+    assert all(m["error_type"] == "connection_error" for m in captured)
+    assert all(m["source"] == "chat" for m in captured)
+
+
+@pytest.mark.asyncio
+async def test_repl_handle_failures_renders(tmp_path):
+    from unittest.mock import AsyncMock
+
+    from mi_dream.cli.repl import REPL
+    from mi_dream.config import settings
+
+    mgr = SessionManager(session_dir=tmp_path)
+    repl = REPL(mgr)
+    fake = [
+        {
+            "id": "t1",
+            "error_type": "api_error",
+            "source": "skill",
+            "error_message": "boom",
+            "tokens": 9,
+            "created_at": "2026-08-07T10:00:00Z",
+        }
+    ]
+
+    with patch(
+        "mi_dream.cli.repl.get_failures", new=AsyncMock(return_value=fake)
+    ) as mock_get, patch("mi_dream.cli.repl.render_failures") as mock_render, patch(
+        "mi_dream.cli.repl.console"
+    ):
+        await repl._handle_failures("api_error")
+
+    mock_get.assert_awaited_once()
+    assert mock_get.call_args.args[0] == settings.tenant_id
+    assert mock_get.call_args.kwargs["error_type"] == "api_error"
+    mock_render.assert_called_once_with(fake)
+
+
+@pytest.mark.asyncio
+async def test_repl_handle_failures_empty(tmp_path):
+    from unittest.mock import AsyncMock
+
+    from mi_dream.cli.repl import REPL
+
+    mgr = SessionManager(session_dir=tmp_path)
+    repl = REPL(mgr)
+
+    with patch(
+        "mi_dream.cli.repl.get_failures", new=AsyncMock(return_value=[])
+    ), patch("mi_dream.cli.repl.console") as mock_console:
+        await repl._handle_failures("")
+
+    assert "No failures" in mock_console.print.call_args.args[0]

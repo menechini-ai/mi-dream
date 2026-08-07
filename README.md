@@ -38,6 +38,7 @@ A multi-agent system whose long-term memory **learns from its own execution**: e
 | **Knowledge Graph** | `ReasoningTrace → Lesson → Strategy` with a state machine, versioning (`SUPERSEDES`), and deduplication |
 | **Episodic Memory** | Conversation compaction into `Episode` past a threshold — auto-compact + auto-learn driven by context |
 | **Daily Review** | Daily stats + integrity checks + LLM narrative summary (`mi-dream review` / `/review`) |
+| **Failure Monitoring** | LLM failures persist as failure traces with error type/source, inspectable via `/failures` and `mi-dream failures` |
 | **Vector Recall** | `strategy_embedding` (1536-d cosine) with domain fallback — graceful degradation never blocks execution |
 | **Multi-Tenant** | Isolation via `tenant_id` on every node (scaffold) |
 
@@ -95,8 +96,8 @@ A multi-agent system whose long-term memory **learns from its own execution**: e
 │  chat → recall → trace   │   traces → lessons → strategies │
 ├──────────────────────────┴────────────────────────────────┤
 │      cli/app.py · repl.py (unified CLI)                    │
-│      chat · reflect · distill · curator · learn            │
-│      · review · sessions · init                            │
+│      chat · reflect · distill · curator · learn · review   │
+│      · sessions · init · failures                          │
 ├────────────────────────────────────────────────────────────┤
 │  Memory: Neo4j Bolt + vector index · PII guard · .env      │
 └────────────────────────────────────────────────────────────┘
@@ -147,6 +148,7 @@ ReasoningTrace ──▶ Lesson ──▶ Strategy (EXPERIMENTAL) ──▶ ACTI
 | **Learning** | `learning/scheduler.py` | `ReflectionScheduler.run_cycle()` + `run_learning_cycle()` orchestrator |
 | **Compactor** | `learning/compactor.py` | `ConversationCompactor` — summarize + compact + `persist_episode()` |
 | **Reviewer** | `learning/reviewer.py` | `DailyReviewer` — daily stats + integrity + LLM summary |
+| **Failure Monitor** | `learning/failure_analyzer.py` | `get_failures()` — last failed `ReasoningTrace`s, filterable by type/source |
 | **Knowledge** | `knowledge/` | `models`, `repository`, `router`, `vector`, `distiller`, `curator` |
 | **Memory** | `memory/` | `connection` (Bolt driver), `bootstrap` (schema), `embeddings`, `reasoning` (fingerprint) |
 | **LLM** | `llm/client.py` | `ask_llm_full` / `ask_llm` — OpenAI-compatible chat wrapper |
@@ -159,7 +161,7 @@ src/mi_dream/
 ├── agents/           # YAML agents (implementation, research, review) + langchain tools
 ├── cli/              # typer, REPL, sessions, renderer, completer, slash commands, cron, loader
 ├── knowledge/        # Strategy, Lesson, repository, router, vector, distiller, curator
-├── learning/         # Evaluator, Reflector, Scheduler, Compactor, Reviewer
+├── learning/         # Evaluator, Reflector, Scheduler, Compactor, Reviewer, FailureAnalyzer
 ├── llm/              # OpenAI-compatible client (ask_llm)
 ├── memory/           # Neo4j connection, schema bootstrap, embeddings, trace fingerprint
 ├── security/         # PII sanitization
@@ -291,6 +293,7 @@ uv run mi-dream <command> [args]
 | `/compact` | Compact the conversation into a summary (`Episode`) and clean the context |
 | `/learn` | Run a learning cycle (reflect → distill → curator) now |
 | `/review` | Run the Daily Review (daily stats + integrity + LLM summary) now |
+| `/failures [<type>]` | List the last 20 failed LLM calls (optionally filtered by error type) |
 | `/status` | Health check (Neo4j + LLM) |
 | `/exit` | Exit (the session is saved with its ID) |
 
@@ -306,6 +309,7 @@ uv run mi-dream <command> [args]
 | `curator` | Governance: integrity, state machine, dedup |
 | `learn` | Daemon: continuous automatic reflection (reflect → distill → curator) |
 | `review` | Daily Review (stats + integrity + LLM summary); use `--once` for a single review |
+| `failures` | List persisted LLM failures (`--limit`, `--type`, `--source`) |
 
 ### Intent Mapping
 

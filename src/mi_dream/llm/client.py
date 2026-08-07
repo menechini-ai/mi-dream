@@ -3,11 +3,45 @@
 import time
 from dataclasses import dataclass
 
-from openai import OpenAI
+from openai import (
+    APIConnectionError,
+    APIError,
+    APITimeoutError,
+    AuthenticationError,
+    OpenAI,
+    PermissionDeniedError,
+    RateLimitError,
+)
 
 from mi_dream.config import settings
 
 _client: OpenAI | None = None
+
+ERROR_TYPE_MESSAGE_MAX = 300
+
+
+def extract_llm_error(exc: Exception) -> tuple[str, str]:
+    """Classify an LLM call failure into a short ``(error_type, message)`` (SDD §23)."""
+    if isinstance(exc, APIConnectionError) or isinstance(exc, ConnectionError):
+        error_type = "connection_error"
+    elif isinstance(exc, APITimeoutError) or isinstance(exc, TimeoutError):
+        error_type = "timeout_error"
+    elif isinstance(exc, RateLimitError):
+        error_type = "rate_limit_error"
+    elif isinstance(exc, AuthenticationError):
+        error_type = "auth_error"
+    elif isinstance(exc, PermissionDeniedError):
+        error_type = "permission_error"
+    elif isinstance(exc, APIError):
+        error_type = "api_error"
+    elif isinstance(exc, ValueError):
+        error_type = "config_error"
+    else:
+        error_type = "unknown_error"
+    message = str(exc).strip() or exc.__class__.__name__
+    if len(message) > ERROR_TYPE_MESSAGE_MAX:
+        message = message[: ERROR_TYPE_MESSAGE_MAX - 1] + "…"
+    return error_type, message
 
 
 def get_client() -> OpenAI:

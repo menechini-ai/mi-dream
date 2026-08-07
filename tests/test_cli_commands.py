@@ -56,8 +56,22 @@ def test_unknown_command():
     assert "Unknown command" in result
 
 
+def test_failures_registered():
+    assert "failures" in COMMANDS
+    result = dispatch("failures")
+    assert isinstance(result, str)
+    assert "failures" in result.lower()
+
+
+def test_help_lists_failures():
+    assert "/failures" in dispatch("help")
+
+
 def test_all_commands_registered():
-    required = ["skills", "agents", "commands", "help", "session", "clear", "exit", "model", "cost"]
+    required = [
+        "skills", "agents", "commands", "help", "session", "clear", "exit",
+        "model", "cost", "failures",
+    ]
     for cmd in required:
         assert cmd in COMMANDS, f"Missing command: {cmd}"
 

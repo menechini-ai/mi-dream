@@ -81,3 +81,50 @@ def test_ask_llm_full_sends_temperature():
 
     kwargs = mock_client.chat.completions.create.call_args.kwargs
     assert kwargs["temperature"] == 0.2
+
+
+def test_extract_llm_error_connection():
+    from mi_dream.llm.client import extract_llm_error
+
+    error_type, message = extract_llm_error(ConnectionError("provider unreachable"))
+    assert error_type == "connection_error"
+    assert "unreachable" in message
+
+
+def test_extract_llm_error_openai_rate_limit():
+    from openai import RateLimitError
+
+    from mi_dream.llm.client import extract_llm_error
+
+    exc = RateLimitError("429 too many requests", response=MagicMock(), body={})
+    error_type, message = extract_llm_error(exc)
+    assert error_type == "rate_limit_error"
+    assert "429" in message
+
+
+def test_extract_llm_error_openai_auth():
+    from openai import AuthenticationError
+
+    from mi_dream.llm.client import extract_llm_error
+
+    exc = AuthenticationError("401 bad key", response=MagicMock(), body={})
+    assert extract_llm_error(exc)[0] == "auth_error"
+
+
+def test_extract_llm_error_config_value_error():
+    from mi_dream.llm.client import extract_llm_error
+
+    assert extract_llm_error(ValueError("LLM_API_KEY not set"))[0] == "config_error"
+
+
+def test_extract_llm_error_unknown():
+    from mi_dream.llm.client import extract_llm_error
+
+    assert extract_llm_error(RuntimeError("weird"))[0] == "unknown_error"
+
+
+def test_extract_llm_error_truncates_message():
+    from mi_dream.llm.client import ERROR_TYPE_MESSAGE_MAX, extract_llm_error
+
+    _, message = extract_llm_error(RuntimeError("x" * 1000))
+    assert len(message) <= ERROR_TYPE_MESSAGE_MAX

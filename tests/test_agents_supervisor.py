@@ -94,6 +94,28 @@ async def test_save_reasoning_trace_persists_outcome_property():
     assert kwargs["outcome"] == "failure"
 
 
+@pytest.mark.asyncio
+async def test_save_reasoning_trace_stores_error_props():
+    from conftest import make_driver_mock
+
+    mock_session = AsyncMock()
+    driver = make_driver_mock(mock_session)
+    await save_reasoning_trace(
+        "t1",
+        "c",
+        {
+            "tenant_id": "default",
+            "outcome": "failure",
+            "error_type": "rate_limit_error",
+            "error_source": "skill",
+        },
+        driver,
+    )
+    kwargs = mock_session.run.call_args[1]
+    assert kwargs["error_type"] == "rate_limit_error"
+    assert kwargs["error_source"] == "skill"
+
+
 async def test_make_recall_strategy_tool_returns_json_context():
     from conftest import make_driver_mock
 

@@ -34,6 +34,24 @@ def render_commands(commands: list[dict]) -> None:
     console.print(table)
 
 
+def render_failures(failures: list[dict]) -> None:
+    table = Table(title="Failures", show_header=True, header_style="bold red")
+    table.add_column("When", style="dim")
+    table.add_column("Type", style="red")
+    table.add_column("Source", style="green")
+    table.add_column("Error", overflow="fold", max_width=60)
+    table.add_column("Tokens", justify="right")
+    for f in failures:
+        table.add_row(
+            str(f.get("created_at") or "")[:19],
+            f.get("error_type", ""),
+            f.get("source", ""),
+            f.get("error_message", ""),
+            str(f.get("tokens", 0)),
+        )
+    console.print(table)
+
+
 def render_message(role: str, content: str) -> None:
     if role == "user":
         console.print(Panel(content, title="You", border_style="green", title_align="left"))
