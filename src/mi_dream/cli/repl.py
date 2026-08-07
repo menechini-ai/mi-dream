@@ -26,6 +26,9 @@ from mi_dream.config import settings
 from mi_dream.health import check_all
 from mi_dream.knowledge.repository import StrategyRepository
 from mi_dream.knowledge.router import ExecutionContext, StrategyRouter
+from mi_dream.knowledge.vector import StrategyVectorRetriever
+from mi_dream.learning.compactor import ConversationCompactor
+from mi_dream.learning.scheduler import run_learning_cycle
 from mi_dream.llm.client import ask_llm_full
 from mi_dream.memory.connection import get_driver
 
@@ -34,19 +37,71 @@ HISTORY_PATH = str(Path.cwd() / ".midream" / "history")
 
 def build_system_prompt(context: ExecutionContext) -> str:
     base = "You are a helpful assistant."
-    if not context.strategies:
-        return base
-    lines = [base, "", "Relevant knowledge strategies:"]
-    for s in context.strategies:
-        lines.append(f"- [{s.title}] ({s.domain}): {s.description}")
+    lines = [base]
+    if context.strategies:
+        lines.append("")
+        lines.append("Relevant knowledge strategies:")
+        for s in context.strategies:
+            lines.append(f"- [{s.title}] ({s.domain}): {s.description}")
+    if context.recent_traces:
+        lines.append("")
+        lines.append("Recent conversation history:")
+        for t in context.recent_traces[-10:]:
+            lines.append(f"- {(t.get('content') or '')[:400]}")
+    if context.episodes:
+        lines.append("")
+        lines.append("Prior session summaries:")
+        for e in context.episodes[-5:]:
+            lines.append(f"- {(e.get('summary') or '')[:400]}")
     return "\n".join(lines)
+
+
+async def _recent_traces(session, tenant_id: str, limit: int = 20) -> list[dict]:
+    try:
+        result = await session.run(
+            """
+            MATCH (t:ReasoningTrace {tenant_id: $tenant_id})
+            RETURN t {.*} AS trace
+            ORDER BY t.created_at DESC
+            LIMIT $limit
+            """,
+            tenant_id=tenant_id,
+            limit=limit,
+        )
+        return [rec["trace"] async for rec in result]
+    except Exception:
+        return []
+
+
+async def _recent_episodes(session, tenant_id: str, limit: int = 5) -> list[dict]:
+    try:
+        result = await session.run(
+            """
+            MATCH (e:Episode {tenant_id: $tenant_id})
+            RETURN e {.*} AS episode
+            ORDER BY e.created_at DESC
+            LIMIT $limit
+            """,
+            tenant_id=tenant_id,
+            limit=limit,
+        )
+        return [rec["episode"] async for rec in result]
+    except Exception:
+        return []
 
 
 async def recall_context(goal: str) -> ExecutionContext:
     try:
         async with get_driver().session(database=settings.neo4j_database) as session:
-            router = StrategyRouter(StrategyRepository(session))
-            return await router.retrieve(goal, {"domain": "general"}, settings.tenant_id)
+            router = StrategyRouter(
+                StrategyRepository(session),
+                vector_retriever=StrategyVectorRetriever(top_k=settings.vector_top_k),
+                top_k=settings.vector_top_k,
+            )
+            context = await router.retrieve(goal, {"domain": "general"}, settings.tenant_id)
+            context.recent_traces = await _recent_traces(session, settings.tenant_id)
+            context.episodes = await _recent_episodes(session, settings.tenant_id)
+            return context
     except Exception:
         return ExecutionContext(goal=goal)
 
@@ -85,8 +140,11 @@ class REPL:
                 lambda: ask_llm_full(
                     system=system_prompt,
                     user_message=user_input,
-                    max_tokens=1024,
-                    history=[{"role": m["role"], "content": m["content"]} for m in self._session_mgr.current().context],
+                    max_tokens=settings.llm_max_tokens,
+                    history=[
+                        {"role": m["role"], "content": m["content"]}
+                        for m in self._session_mgr.current().context
+                    ],
                 ),
             )
         assistant_msg = resp.content
@@ -104,14 +162,53 @@ class REPL:
                 lambda: ask_llm_full(
                     system=system_prompt,
                     user_message=user_input,
-                    max_tokens=1024,
-                    history=[{"role": m["role"], "content": m["content"]} for m in self._session_mgr.current().context],
+                    max_tokens=settings.llm_max_tokens,
+                    history=[
+                        {"role": m["role"], "content": m["content"]}
+                        for m in self._session_mgr.current().context
+                    ],
                 ),
             )
         assistant_msg = resp.content
         self._session_mgr.add_message("assistant", assistant_msg)
         render_message("assistant", assistant_msg)
         render_status(settings.llm_model, resp.total_tokens, format_latency(resp.latency_ms))
+
+    async def _handle_session_command(self, args: str) -> None:
+        name = args.strip() or "default"
+        self._session_mgr.resume(name)
+        console.print(f"[green]Session: {name}[/green]")
+
+    async def _handle_compact(self) -> None:
+        sess = self._session_mgr.current()
+        if not sess.context:
+            console.print("[dim]Nothing to compact.[/dim]")
+            return
+        compactor = ConversationCompactor()
+        compacted = await compactor.compact(sess.context)
+        if compacted == sess.context:
+            console.print("[dim]Context under threshold; nothing compacted.[/dim]")
+            return
+        summary = compacted[0]["content"]
+        sess.context = compacted
+        try:
+            episode_id = await compactor.persist_episode(summary, sess.name)
+            console.print(f"[green]Compacted → Episode {episode_id}[/green]")
+        except Exception as e:
+            console.print(f"[yellow]Episode persist failed (graceful): {e}[/yellow]")
+
+    async def _handle_learn(self) -> None:
+        with console.status("[bold cyan]Learning cycle...", spinner="dots"):
+            report = await run_learning_cycle()
+        console.print(f"[green]Learn: {report}[/green]")
+
+    async def _auto_learn(self) -> None:
+        while self._running:
+            await asyncio.sleep(settings.refl_interval_minutes * 60)
+            try:
+                await run_learning_cycle()
+            except Exception:
+                pass
 
     async def run(self) -> None:
         try:
@@ -130,31 +227,52 @@ class REPL:
             multiline=False,
         )
         console.print(f"[bold cyan]mi-dream[/bold cyan] — Model: {settings.llm_model}")
-        last_session = self._session_mgr.list_sessions()[-1] if self._session_mgr.list_sessions() else None
-        if last_session:
-            sess = self._session_mgr.resume(last_session)
-            console.print(f"[dim]Session {sess.name} resumed ({len(sess.context)} messages)[/dim]")
+        sess = self._session_mgr.current()
+        if sess.name == "default" and not sess.context:
+            saved = self._session_mgr.list_sessions()
+            if saved:
+                sess = self._session_mgr.resume(saved[-1])
+                console.print(
+                    f"[dim]Session {sess.name} resumed ({len(sess.context)} messages)[/dim]"
+                )
+            else:
+                sess = self._session_mgr.create(new_session_id())
+                console.print(
+                    f"[dim]Session {sess.name}[/dim] — retomar depois com /session {sess.name}"
+                )
         else:
-            sess = self._session_mgr.create(new_session_id())
-            console.print(f"[dim]Session {sess.name}[/dim] — retomar depois com /session {sess.name}")
+            console.print(
+                f"[dim]Session {sess.name} resumed ({len(sess.context)} messages)[/dim]"
+            )
         console.print("[dim]Type /help for commands, Ctrl+C to exit[/dim]\n")
 
         cron_mgr = CronManager()
+        self._traces_since_learn = 0
+        self._auto_learn_task = asyncio.create_task(self._auto_learn())
 
         while self._running:
             try:
                 for job in cron_mgr.due_jobs():
                     if job.script:
                         output = cron_mgr.run_script(job.script)
-                        console.print(f"[dim][cron] Script: {job.script} — {output[:100] or '(silent)'}[/dim]")
+                        console.print(
+                            f"[dim][cron] Script: {job.script} — {output[:100] or '(silent)'}[/dim]"
+                        )
                     else:
                         console.print(f"[dim][cron] Running: {job.prompt[:60]}...[/dim]")
                         with console.status(f"[bold cyan]Cron: {job.id}...", spinner="dots"):
                             resp = await asyncio.get_event_loop().run_in_executor(
                                 None,
-                                lambda: ask_llm_full(system="You are a learning agent. Execute the task.", user_message=job.prompt, max_tokens=1024, history=[]),
+                                lambda: ask_llm_full(
+                                    system="You are a learning agent. Execute the task.",
+                                    user_message=job.prompt,
+                                    max_tokens=settings.llm_max_tokens,
+                                    history=[],
+                                ),
                             )
-                        console.print(f"[dim][cron] Done: {job.id} ({resp.total_tokens} tokens)[/dim]")
+                        console.print(
+                            f"[dim][cron] Done: {job.id} ({resp.total_tokens} tokens)[/dim]"
+                        )
                     cron_mgr.mark_run(job.id)
 
                 user_input = await prompt_session.prompt_async("\n❯ ")
@@ -184,6 +302,12 @@ class REPL:
                             f"  Output tokens (est.): {assistant_chars // 4}\n"
                             f"  Model: {settings.llm_model}"
                         )
+                    elif cmd == "session":
+                        await self._handle_session_command(args)
+                    elif cmd == "compact":
+                        await self._handle_compact()
+                    elif cmd == "learn":
+                        await self._handle_learn()
                     elif cmd in COMMANDS:
                         if cmd == "cron" and args.startswith("add "):
                             cron_mgr = CronManager()
@@ -192,9 +316,16 @@ class REPL:
                                 interval, prompt, script = parsed
                                 job = cron_mgr.add(interval, prompt, script=script)
                                 mode = f"script={script}" if script else "agent"
-                                console.print(f"[green]Cron job scheduled:[/green] [{job.id}] every {interval} ({mode}) — \"{job.prompt[:50]}...\"")
+                                console.print(
+                                    f"[green]Cron job scheduled:[/green] [{job.id}] every "
+                                    f"{interval} ({mode}) — \"{job.prompt[:50]}...\""
+                                )
                             else:
-                                console.print("[red]Usage:[/red] /cron add <interval> \"<prompt>\"\n  /cron add <interval> --no-agent --script <file.sh>\nExample: /cron add 1h \"busque sobre SRE\"")
+                                console.print(
+                                    "[red]Usage:[/red] /cron add <interval> \"<prompt>\"\n"
+                                    "  /cron add <interval> --no-agent --script <file.sh>\n"
+                                    "Example: /cron add 1h \"busque sobre SRE\""
+                                )
                         else:
                             result = dispatch(cmd, args)
                             if isinstance(result, list):
@@ -247,7 +378,7 @@ class REPL:
                         lambda: ask_llm_full(
                             system=system_prompt,
                             user_message=user_input,
-                            max_tokens=1024,
+                            max_tokens=settings.llm_max_tokens,
                             history=history,
                         ),
                     )
@@ -266,6 +397,7 @@ class REPL:
                         metadata={"tenant_id": settings.tenant_id, "outcome": "success"},
                         driver=get_driver(),
                     )
+                    self._traces_since_learn += 1
                 except Exception:
                     pass
 
@@ -276,6 +408,12 @@ class REPL:
             except Exception as e:
                 render_error(str(e))
 
+        self._auto_learn_task.cancel()
+        if self._traces_since_learn:
+            try:
+                await run_learning_cycle()
+            except Exception:
+                pass
         self._session_mgr.save()
         sess = self._session_mgr.current()
         console.print(f"\n[bold]Session {sess.name} saved. Goodbye![/bold]")

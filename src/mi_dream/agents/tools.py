@@ -57,7 +57,7 @@ def make_recall_strategy_tool(tenant_id: str = "default"):
     Uses semantic vector recall via neo4j-graphrag (StrategyVectorRetriever),
     falling back to domain-based listing when vectors are unavailable.
     """
-    vector = StrategyVectorRetriever()
+    vector = StrategyVectorRetriever(top_k=settings.vector_top_k)
 
     @tool
     async def recall_strategy(goal: str, context: str = "{}") -> str:
@@ -78,7 +78,9 @@ def make_recall_strategy_tool(tenant_id: str = "default"):
         try:
             async with get_driver().session(database=settings.neo4j_database) as session:
                 router = StrategyRouter(
-                    StrategyRepository(session), vector_retriever=vector
+                    StrategyRepository(session),
+                    vector_retriever=vector,
+                    top_k=settings.vector_top_k,
                 )
                 result = await router.retrieve(goal, ctx, tenant_id)
             return result.to_json()
