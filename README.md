@@ -329,7 +329,7 @@ uv run pytest          # full suite
 uv run ruff check src tests
 ```
 
-Suite: **218 passed / 4 skipped** (unit + integration + load test).
+Suite: **237 passed / 4 skipped** (unit + integration + load test).
 
 Test coverage includes: sessions, REPL commands, loader/renderer, learning pipeline (reflect/distill/curator), compaction, daily review, knowledge repository/router/vector, trace integrity, security sanitization, memory connection/bootstrap, and health.
 
