@@ -9,39 +9,25 @@ class SlashCommand:
     handler: Callable[[str], str]
 
 
-def _handle_skills(args: str) -> str:
-    """List available skills."""
-    skills = [
+def _handle_skills(args: str) -> list[dict]:
+    return [
         {"name": "brainstorming", "desc": "Design exploration"},
         {"name": "systematic-debugging", "desc": "Bug investigation"},
         {"name": "test-driven-development", "desc": "TDD workflow"},
         {"name": "writing-plans", "desc": "Implementation planning"},
     ]
-    lines = ["Available skills:", ""]
-    for s in skills:
-        lines.append(f"  /{s['name']}  — {s['desc']}")
-    return "\n".join(lines)
 
 
-def _handle_agents(args: str) -> str:
-    """List available agent types."""
-    agents = [
+def _handle_agents(args: str) -> list[dict]:
+    return [
         {"name": "Research", "desc": "Codebase exploration and research"},
         {"name": "Implementation", "desc": "Code writing and refactoring"},
         {"name": "Review", "desc": "Code review and quality checks"},
     ]
-    lines = ["Available agents:", ""]
-    for a in agents:
-        lines.append(f"  {a['name']}  — {a['desc']}")
-    return "\n".join(lines)
 
 
-def _handle_commands(args: str) -> str:
-    """List available slash commands."""
-    lines = ["Slash commands:", ""]
-    for cmd in COMMANDS.values():
-        lines.append(f"  /{cmd.name}  — {cmd.description}")
-    return "\n".join(lines)
+def _handle_commands(args: str) -> list[dict]:
+    return [{"name": cmd.name, "desc": cmd.description} for cmd in COMMANDS.values()]
 
 
 def _handle_help(args: str) -> str:
@@ -72,6 +58,15 @@ def _handle_clear(args: str) -> str:
 
 def _handle_exit(args: str) -> str:
     raise SystemExit(0)
+
+
+def _handle_model(args: str) -> str:
+    from mi_dream.config import settings
+    return f"Model: {settings.llm_model}"
+
+
+def _handle_cost(args: str) -> str:
+    return "Use /cost in REPL for session cost estimate."
 
 
 def _handle_cron(args: str) -> str:
@@ -105,10 +100,12 @@ COMMANDS: dict[str, SlashCommand] = {
     "clear": SlashCommand("clear", "Clear session context", _handle_clear),
     "exit": SlashCommand("exit", "Exit the CLI", _handle_exit),
     "cron": SlashCommand("cron", "Manage learning cron jobs", _handle_cron),
+    "model": SlashCommand("model", "Show current model", _handle_model),
+    "cost": SlashCommand("cost", "Session cost estimate", _handle_cost),
 }
 
 
-def dispatch(command: str, args: str = "") -> str:
+def dispatch(command: str, args: str = "") -> str | list[dict]:
     cmd = COMMANDS.get(command)
     if cmd:
         return cmd.handler(args)

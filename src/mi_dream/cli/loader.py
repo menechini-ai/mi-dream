@@ -1,4 +1,5 @@
 import functools
+import re
 from pathlib import Path
 
 import yaml
@@ -49,14 +50,20 @@ def _load_skill_dirs(directory: str) -> list[dict]:
 
 
 def _parse_frontmatter(text: str) -> tuple[dict, str]:
-    """Extract YAML frontmatter and body from a SKILL.md file."""
-    import re
     match = re.match(r"^---\s*\n(.*?)\n---\s*\n(.*)$", text, re.DOTALL)
     if match:
         meta = yaml.safe_load(match.group(1)) or {}
         body = match.group(2).strip()
         return meta, body
     return {}, text.strip()
+
+
+def _resolve_agents_dir() -> str:
+    midream = Path(".midream/agents")
+    if midream.is_dir() and any(midream.glob("*.yaml")):
+        return str(midream)
+    src = Path(__file__).resolve().parent.parent / "agents"
+    return str(src)
 
 
 @functools.lru_cache(maxsize=2)
@@ -66,7 +73,7 @@ def load_skills() -> list[dict]:
 
 @functools.lru_cache(maxsize=2)
 def load_agents() -> list[dict]:
-    return _load_yaml_files(settings.agents_dir)
+    return _load_yaml_files(_resolve_agents_dir())
 
 
 def invalidate_cache() -> None:

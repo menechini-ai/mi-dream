@@ -130,8 +130,13 @@ class REPL:
             multiline=False,
         )
         console.print(f"[bold cyan]mi-dream[/bold cyan] — Model: {settings.llm_model}")
-        sess = self._session_mgr.create(new_session_id())
-        console.print(f"[dim]Session {sess.name}[/dim] — retomar depois com /session {sess.name}")
+        last_session = self._session_mgr.list_sessions()[-1] if self._session_mgr.list_sessions() else None
+        if last_session:
+            sess = self._session_mgr.resume(last_session)
+            console.print(f"[dim]Session {sess.name} resumed ({len(sess.context)} messages)[/dim]")
+        else:
+            sess = self._session_mgr.create(new_session_id())
+            console.print(f"[dim]Session {sess.name}[/dim] — retomar depois com /session {sess.name}")
         console.print("[dim]Type /help for commands, Ctrl+C to exit[/dim]\n")
 
         cron_mgr = CronManager()
