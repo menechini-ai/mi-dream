@@ -1,3 +1,6 @@
+from mi_dream.config import settings
+
+
 def build_embedder():
     """Build the embedding provider used by the vector retriever and the
     Distiller (SDD §6 recall_strategy, §4.1.6).

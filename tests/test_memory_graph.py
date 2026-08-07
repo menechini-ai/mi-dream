@@ -7,7 +7,6 @@ import pytest
 
 from mi_dream.cli.repl import recall_context, _semantic_traces, _recent_traces
 from mi_dream.knowledge.router import ExecutionContext
-from mi_dream.knowledge.vector import StrategyVectorRetriever
 
 
 # --- recall_context: semantic traces are searched ---

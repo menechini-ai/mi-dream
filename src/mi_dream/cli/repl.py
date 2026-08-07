@@ -12,7 +12,7 @@ from mi_dream.agents.loop import run_tool_loop
 from mi_dream.agents.toolbox import build_chat_toolbox
 from mi_dream.agents.tools import save_reasoning_trace
 from mi_dream.observability import get_logger, get_metrics
-from mi_dream.security.tenant import TenantContext, tenant_from_str
+from mi_dream.security.tenant import TenantContext
 from mi_dream.cli.commands import COMMANDS, dispatch
 from mi_dream.cli.completer import SlashCompleter
 from mi_dream.cli.cron import CronManager

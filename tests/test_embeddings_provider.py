@@ -1,7 +1,7 @@
 """Tests for embedding provider selection (SentenceTransformers → Ollama → OpenAI)."""
 
 import importlib
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -137,7 +137,6 @@ async def test_save_trace_without_embedding_still_persists():
 
 
 def _mock_async_cm(result):
-    from unittest.mock import AsyncMock
     cm = MagicMock()
     cm.__aenter__ = AsyncMock(return_value=result)
     cm.__aexit__ = AsyncMock(return_value=False)
