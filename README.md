@@ -117,16 +117,40 @@ Suite: 141 passed / 4 skipped (unitários + integração + load test).
 
 ```
 src/mi_dream/
-├── agents/       # DeepAgents Supervisor + tools (recall_strategy, save_reasoning_trace)
-├── cli/          # typer, REPL, sessões, renderer, completer, slash commands
-├── knowledge/    # Strategy, Lesson, repository, service, router, vector, distiller, curator
-├── learning/     # Evaluator, Reflector, Scheduler
-├── llm/          # cliente OpenAI-compatible (ask_llm)
-├── memory/       # conexão Neo4j, bootstrap do schema, embeddings, fingerprint de traces
-├── security/     # sanitização de PII
-├── config.py     # configuração (pydantic-settings)
-└── health.py     # health checks
+├── agents/           # Agents YAML (implementation, research, review)
+├── cli/              # typer, REPL, sessões, renderer, completer, slash commands, cron, loader
+├── knowledge/        # Strategy, Lesson, repository, service, router, vector, distiller, curator
+├── learning/         # Evaluator, Reflector, Scheduler
+├── llm/              # cliente OpenAI-compatible (ask_llm)
+├── memory/           # conexão Neo4j, bootstrap do schema, embeddings, fingerprint de traces
+├── security/         # sanitização de PII
+├── skills/           # Skills YAML (brainstorming, systematic-debugging, TDD, writing-plans)
+├── config.py         # configuração (pydantic-settings)
+└── health.py         # health checks
 ```
+
+## Configuração via `.midream/`
+
+O diretório `.midream/` guarda configurações e dados locais do CLI (gitignored):
+
+| Arquivo | Função |
+|---|---|
+| `agents/*.yaml` | Definem agents especializados com `name`, `description` e `prompt` |
+| `skills/*.yaml` | Skills reutilizáveis (brainstorming, systematic-debugging, TDD, writing-plans) |
+| `cron.json` | Jobs agendados (`/cron add <interval> "<prompt>"`) |
+| `history` | Histórico de sessões do REPL |
+| `scripts/` | Scripts executáveis por cron jobs |
+
+Agents e skills são YAMLs simples — fácil de adicionar ou customizar sem tocar no código.
+
+## Testes
+
+```bash
+uv run pytest          # suite completa
+uv run ruff check src tests
+```
+
+Suite: 191 passed / 5 failed / 5 skipped (5 failures pré-existentes em comandos que retornam string formatada).
 
 ## Roadmap
 
