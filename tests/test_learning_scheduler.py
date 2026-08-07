@@ -110,6 +110,9 @@ async def test_run_learning_cycle_orchestrates_all_stages():
          patch("mi_dream.learning.scheduler.KnowledgeDistiller", return_value=dist), \
          patch("mi_dream.learning.scheduler.Curator", return_value=cur), \
          patch("mi_dream.learning.scheduler.get_driver", return_value=mock_driver), \
+         patch("mi_dream.learning.scheduler.run_failure_analysis", new=AsyncMock(
+             return_value={"failures_processed": 2, "patterns_created": 1, "patterns_updated": 0}
+         )) as mock_fa, \
          patch("mi_dream.learning.scheduler.build_embedder", return_value=None):
         report = await run_learning_cycle("default")
 
@@ -118,7 +121,9 @@ async def test_run_learning_cycle_orchestrates_all_stages():
     dist.distill.assert_awaited_once()
     cur.run_integrity_checks.assert_awaited_once_with("default")
     cur.process_experimental_candidates.assert_awaited_once_with("default")
+    mock_fa.assert_awaited_once_with("default")
     assert report["reflection"]["lessons_created"] == 1
+    assert report["failure_analysis"]["patterns_created"] == 1
     assert "distill" in report
     assert "curator" in report
 
@@ -152,3 +157,37 @@ async def test_run_learning_cycle_isolates_stage_failures():
 
     assert "error" in report["reflection"]
     assert report["distill"] is not None
+
+
+@pytest.mark.asyncio
+async def test_run_learning_cycle_isolates_failure_analysis():
+    from unittest.mock import AsyncMock
+
+    from mi_dream.learning.scheduler import run_learning_cycle
+
+    mock_session = AsyncMock()
+    mock_driver = make_driver_mock(mock_session)
+
+    sched = MagicMock()
+    sched.run_cycle = AsyncMock(return_value={"traces_processed": 0, "lessons_created": 0})
+    dist = MagicMock()
+    dist.pending_lessons = AsyncMock(return_value=[])
+    dist.distill = AsyncMock(return_value=[])
+    cur = MagicMock()
+    cur.run_integrity_checks = AsyncMock(return_value=[])
+    cur.run_state_machine = AsyncMock(return_value={"promoted": 0, "demoted": 0})
+    cur.deduplicate = AsyncMock(return_value=[])
+    cur.process_experimental_candidates = AsyncMock(return_value=[])
+
+    with patch("mi_dream.learning.scheduler.ReflectionScheduler", return_value=sched), \
+         patch("mi_dream.learning.scheduler.KnowledgeDistiller", return_value=dist), \
+         patch("mi_dream.learning.scheduler.Curator", return_value=cur), \
+         patch("mi_dream.learning.scheduler.get_driver", return_value=mock_driver), \
+         patch("mi_dream.learning.scheduler.run_failure_analysis", new=AsyncMock(
+             side_effect=RuntimeError("neo4j down")
+         )), \
+         patch("mi_dream.learning.scheduler.build_embedder", return_value=None):
+        report = await run_learning_cycle("default")
+
+    assert "error" in report["failure_analysis"]
+    assert report["reflection"] is not None

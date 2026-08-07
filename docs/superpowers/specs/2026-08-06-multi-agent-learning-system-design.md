@@ -38,7 +38,7 @@ O diferencial arquitetural: o grafo Neo4j evolui a partir de *reasoning traces* 
 
 | Camada | Tecnologia | Motivo |
 |---|---|---|
-| Orquestração de agentes | `deepagents` (LangGraph por baixo) | Harness pronto (planning, sub-agents, filesystem); LangGraph moderno resolve a objeção de "framework esconde execução" |
+| Orquestração de agentes | `langchain-core` tools + agent loop customizado (`agents/loop.py`) | Zero abstração oculta: tool-use loop direto sobre `ask_llm`; toolbox (`agents/toolbox.py`) com web, file e exec |
 | Memória (short/long/reasoning) | `neo4j-agent-memory`, self-hosted/bolt | 100% Python, `pip install`, permite Cypher direto pro que o SDK não expõe |
 | Grafo | Neo4j 5.20+ | Vector index nativo + Cypher |
 | Observability de prompt/versão | Langfuse/OTel (fora do grafo) | Não polui o grafo de conhecimento com metadados de engenharia |
@@ -210,14 +210,23 @@ Permite responder perguntas como "quais estratégias existem para diagnóstico d
 ## 6. Componentes de Execução
 
 ```
-DeepAgents Supervisor/Planner
-  ├─ Research Agent (sub-agent)
-  └─ Execution Agent (sub-agent)
+REPL / CLI
+   │
+   ├─ ask_llm(system, user)          → resposta direta do LLM
+   ├─ toolbox.run(name, args)         → tool calls (web, file, exec)
+   └─ agent loop (loop.py)            → tool-use multi-turn (ainvoke + tool results)
 ```
 
-**Tools do Supervisor:**
-- `recall_strategy` — consulta o Strategy Router antes de planejar. Recuperação vetorial com `StrategyVectorRetriever` (embedding via `OpenAIEmbeddings`, índice `strategy_embedding` 1536-d cosine, filtros `{tenant_id, state: ACTIVE, domain}`); se o vector search falhar ou voltar vazio, cai para `StrategyRepository.list_by_domain(domain, tenant_id, ACTIVE)`. Embedding das Strategies é gravado pelo Knowledge Distiller no CREATE.
+**Tools disponíveis no agent loop (`agents/toolbox.py`):**
+- `recall_strategy` — consulta o Strategy Router antes de responder. Recuperação vetorial com `StrategyVectorRetriever` (embedding via `OpenAIEmbeddings`, índice `strategy_embedding` 1536-d cosine, filtros `{tenant_id, state: ACTIVE, domain}`); se o vector search falhar ou voltar vazio, cai para `StrategyRepository.list_by_domain(domain, tenant_id, ACTIVE)`. Embedding das Strategies é gravado pelo Knowledge Distiller no CREATE.
 - `save_reasoning_trace` — grava trace via `memory.reasoning`
+- `web_search`, `web_fetch` — busca e fetch web
+- `read_file`, `edit_file`, `list_dir` — filesystem sandboxado
+- `exec` — shell commands (condicional via `enable_shell_tool`)
+
+**Agent loop (`agents/loop.py`):**
+- `run_tool_loop(system, user, toolbox, max_iterations)` — multi-turn: LLM responde ou chama tools → executa → feed de volta → até resposta final ou limite
+- Zero framework: async puro sobre `ask_llm_full`, sem LangGraph/LangChain agent
 
 **Execution Context (contrato de runtime):**
 - `goal` — objetivo da tarefa
@@ -231,8 +240,6 @@ DeepAgents Supervisor/Planner
 - `episodes` — resumos de conversas anteriores (`Episode`, memória episódica compactada, v2.3)
 
 Esse contrato facilita trocar o Router sem alterar os agentes.
-
-**Regra de discrepância:** se o Research Agent trouxer dado que contradiz a Strategy retornada, o Supervisor sinaliza a discrepância explicitamente na resposta, em vez de escolher silenciosamente uma fonte.
 
 ---
 
@@ -261,13 +268,13 @@ Knowledge Librarian
 ## 8. Fluxo Arquitetural
 
 ```
-                         DeepAgents
+                         CLI / REPL
                               │
-                    Supervisor / Planner
+                    agent loop + toolbox
                               │
          ┌────────────────────┴────────────────────┐
          │                                         │
-  Research Agent                           Execution Agent
+  web/file tools                            exec (conditional)
          │                                         │
          └───────────────┬─────────────────────────┘
                          │
@@ -296,7 +303,7 @@ Knowledge Librarian
    Strategy Router            Knowledge Librarian
            │                (serviço contínuo:
            ▼                 reindexação, Leiden,
-  DeepAgents Supervisor       compactação hierárquica)
+  Agent loop + toolbox        compactação hierárquica)
 ```
 
 **Nota estrutural:** o Knowledge Librarian atua diretamente sobre o Knowledge Graph como serviço contínuo (reindexação, detecção de comunidades, manutenção de índices), independente da criação de novas estratégias — não é uma etapa sequencial do pipeline.
@@ -364,7 +371,7 @@ TraceCreated
 
 | ID | Regra |
 |---|---|
-| INV-001 | ReasoningTrace nunca é alterado. |
+| INV-001 | ReasoningTrace é **append-only** e possui fingerprint determinístico verificável. Alteração do conteúdo após persistência deve ser detectável. |
 | INV-002 | Strategy `ACTIVE` sempre possui `support_count >= 3`. |
 | INV-002a | `support_count` é monotonicamente não-decrescente. |
 | INV-003 | `SUPERSEDED` sempre aponta para exatamente uma Strategy sucessora. |
@@ -372,7 +379,7 @@ TraceCreated
 
 **Enforcement (Fase 1):**
 
-- **INV-001 — append-only + detecção.** Todo `ReasoningTrace` é criado via `CREATE` e recebe `content_hash` (SHA-256 determinístico de `content`/`outcome`/`metadata` — `mi_dream/memory/reasoning.trace_fingerprint`). Não existe caminho de escrita de update/delete no código. O Curator roda `check_trace_immutability` dentro de `run_integrity_checks`, recomputando o fingerprint e sinalizando qualquer divergência (mutação externa) ou trace sem `content_hash` (pré-feature). *Nota: bloqueio no nível do grafo via `apoc.trigger` foi avaliado e descartado — bug no APOC 5.26.29 + Neo4j 5.26 (event data com tipo inconsistente, `drop` assíncrono quebrado com FOLLOWER). Fica como hardening futuro se o APOC for corrigido.*
+- **INV-001 — append-only + detecção.** Todo `ReasoningTrace` é criado via `CREATE` (não existe caminho de UPDATE/DELETE no código) e recebe `content_hash` (SHA-256 determinístico de `content`/`outcome`/`metadata` — `mi_dream/memory/reasoning.trace_fingerprint`). O Curator roda `check_trace_immutability` dentro de `run_integrity_checks`, recomputando o fingerprint e sinalizando qualquer divergência (mutação externa) ou trace sem `content_hash` (pré-feature). *Nota: bloqueio no nível do grafo via `apoc.trigger` foi avaliado e descartado — bug no APOC 5.26.29 + Neo4j 5.26 (event data com tipo inconsistente, `drop` assíncrono quebrado com FOLLOWER). Fica como hardening futuro se o APOC for corrigido.*
 - **INV-002a — clamp no grafo.** `update_metrics` usa `support_count = support_count + CASE WHEN $delta < 0 THEN 0 ELSE $delta END`: deltas negativos são descartados no nível do Cypher, então `support_count` nunca decresce independentemente do caller.
 
 ---
@@ -384,7 +391,7 @@ TraceCreated
 
 **Availability**
 - Learning Pipeline pode ficar indisponível sem afetar execução.
-- Comportamento de degradação explícito: se a Learning Pipeline estiver offline, `Strategy Router` retorna vazio e o Supervisor planeja do zero — nunca bloqueia a execução.
+- Comportamento de degradação explícito: se a Learning Pipeline estiver offline, `Strategy Router` retorna vazio e o agent loop planeja do zero — nunca bloqueia a execução.
 
 **Scalability**
 - 10 milhões de nós
@@ -424,8 +431,8 @@ TraceCreated
 ## 15. Roadmap
 
 ```
-Phase 1
-  - DeepAgents (Supervisor + sub-agents)
+Phase 1 (implementado)
+  - LangChain tools / REPL (agent loop customizado, v2.4)
   - Neo4j Agent Memory (self-hosted/bolt)
   - Strategy (CRUD básico)
   - Reflection (cron simples)
@@ -434,13 +441,16 @@ Phase 1
   - Lesson como nó de primeira classe (já implementado — scheduler cria `(l:Lesson)` + `DERIVED_FROM`)
   - v2.3: Episode (compaction de conversa) + reflexão automática + recall de traces/episodes
   - v2.4: gatilhos por contexto (traces + auto-compact) + Daily Review (`DailyReview`)
+  - v2.5: Failure Monitoring (`ReasoningTrace {outcome:"failure"}` + `/failures` + `mi-dream failures`)
 
 Phase 2
   - Reflector (separado de Reflection)
-  - Pattern Miner (clustering fuzzy)
+  - FailurePattern (entidade formal) + Failure Analyzer — caminho negativo dual-path (§20.3, §23.7)
+  - Pattern Miner (clustering fuzzy) — convergência success/failure
   - Distiller com LLM (authoring de conteúdo)
-  - Knowledge Librarian (Leiden, compactação)
+  - Knowledge Librarian (compactação, reindexação) — **Leiden adiado** até haver volume real de dados
   - Workflow / BestPractice (abstrações emergentes)
+  - `VALIDATES` / `CONTRADICTS` / `ABSTRACTS`
 
 Phase 3
   - Capability Graph
@@ -448,6 +458,8 @@ Phase 3
   - Online Validation (nó Validation, KM-008)
   - Adaptive Retrieval
 ```
+
+> **Leiden (Phase 2 → adiado).** Community detection só entra depois de coletar dados reais: centenas/milhares de Strategies com `support_count`, `success_rate`, `failure_rate`, `usage`. Sem esse volume, Leiden vira complexidade operacional sem benefício mensurável. Decisão registrada em §17.
 
 ---
 
@@ -481,6 +493,8 @@ Phase 3
 - **Reflexão automática em background, com falha silenciosa (v2.3)** — `run_learning_cycle` isola cada etapa em `try/except`; o ciclo nunca bloqueia o chat (alinhado a §13 Availability). Intervalo via `REFLECTION_INTERVAL_MINUTES` no REPL e `REFLECTION_CRON` no daemon `mi-dream learn`.
 - **Bônus `+0.1` para `outcome=="success"` no Evaluator (v2.3)** — conversas curtas de sucesso (fatos, nomes, preferências) passam a atingir o threshold do Reflector; traces longos/falhas seguem pontuando mais alto.
 - **Seeding de métricas no Distiller (v2.3)** — `success_rate` nunca era escrito (ficava 0.0), tornando INV-002/KM-008 inalcançável. `_create`/`_reinforce` agora registram o primeiro reforço (`support_count=1, success_rate=1.0`); o portão de promoção é preservado.
+- **Leiden adiado (v2.5)** — community detection só após volume real de Strategies com `support_count`/`success_rate`/`failure_rate`/`usage` (centenas/milhares). Sem dados, Leiden é complexidade operacional sem benefício mensurável.
+- **FailurePath como conhecimento negativo (v2.5)** — falha e sucesso são sinais distintos: `FailurePattern` não é o "inverso" de `Strategy`. O caminho negativo (`FailureTrace → FailureAnalysis → FailurePattern`) tem métricas próprias (`failure_count`, `last_seen`) e alimenta o mesmo Strategy Router (recall negativo). Phase 2.
 
 ---
 
@@ -574,6 +588,37 @@ O Learning Pipeline (trace → lesson → strategy → governança) deixa de dep
 
 ### 20.3 Ciclo (`run_learning_cycle`)
 
+**Alvo arquitetural (dual-path):**
+
+```
+                         ReasoningTrace
+                              │
+                    ┌─────────┴──────────┐
+                    │                    │
+                Success               Failure
+                    │                    │
+                    ▼                    ▼
+               Evaluator          FailureAnalyzer      [Phase 2]
+                    │                    │
+                    ▼                    ▼
+               Reflector          FailurePattern       [Phase 2]
+                    │                    │
+                    └─────────┬──────────┘
+                              ▼
+                        Pattern Miner                   [Phase 2]
+                              │
+                              ▼
+                     Knowledge Distiller
+                              │
+                              ▼
+                           Curator
+                              │
+                              ▼
+                        Knowledge Graph
+```
+
+**Fase 1 (implementado)** — caminho linear:
+
 ```
 ReflectionScheduler.run_cycle()     traces → Lessons (DERIVED_FROM)
         │
@@ -581,6 +626,8 @@ KnowledgeDistiller.distill(...)     Lessons → Strategy EXPERIMENTAL + SUPPORTE
         │
 Curator                             integridade → state machine → dedup → EXPERIMENTAL→ACTIVE
 ```
+
+Falhas em Fase 1 persistem como `ReasoningTrace {outcome:"failure"}` (monitoramento, §23), sem entidade `FailurePattern` ainda.
 
 Cada etapa é isolada com `try/except`: a falha do pipeline **nunca** bloqueia a execução (degradação graciosa, §13 Availability).
 
@@ -614,6 +661,8 @@ No REPL, após cada troca de mensagens, se `sum(len(content)) do contexto >= COM
 
 Revisão diária automatizada ("daily") do que foi aprendido e produzido no dia: verifica se o pipeline processou corretamente (sem traces órfãos/pendentes), se a integridade do grafo se mantém e se há conhecimento estagnado que merece atenção.
 
+> **Posicionamento:** Daily Review é **observabilidade operacional** do sistema de aprendizado (human-facing), não o mecanismo de aprendizado em si. Mantém-se separado do Learning Pipeline: execução (`runtime`) / aprendizado (`async`) / revisão (`human-facing`) são planos distintos.
+
 ### 22.2 Componentes
 
 - `DailyReviewer(session, use_llm=True)` — coleta stats + integridade + resumo LLM + persistência.
@@ -641,5 +690,72 @@ Revisão diária automatizada ("daily") do que foi aprendido e produzido no dia:
 |---|---|---|
 | `/review` | REPL | roda `run_daily_review` imediatamente |
 | `uv run mi-dream review [--once]` | CLI | revisão imediata; daemon diário sem `--once` |
+
+---
+
+## 23. Monitoramento de Falhas (v2.5)
+
+### 23.1 Objetivo
+
+Tornar falhas de execução visíveis e aprendizáveis. Toda chamada LLM que falha (chat, skill, agent, cron) persiste um `ReasoningTrace` com `outcome="failure"` e detalhes estruturados do erro; o REPL e a CLI expõem `failures` para inspeção e a análise agrega por tipo. Falhas já recebem bônus no `Evaluator` (§12/§20.3, +0.3) — persistir a falha alimenta o pipeline de reflexão.
+
+### 23.2 Componentes
+
+- `extract_llm_error(exc) -> (error_type, message)` — `llm/client.py`: classifica exceções do SDK OpenAI/builtins em tipo curto (`connection_error`, `timeout_error`, `rate_limit_error`, `auth_error`, `permission_error`, `api_error`, `config_error`, `unknown_error`) com mensagem truncada (300 chars).
+- `save_reasoning_trace` (agent/tools) — além de `outcome`, grava propriedades `error_type` e `error_source` no nó (nullable), habilitando filtro Cypher sem parse de JSON.
+- `get_failures(tenant_id, limit=20, error_type=None, source=None) -> list[dict]` — `learning/failure_analyzer.py`: consulta `(:ReasoningTrace {outcome:"failure"})` mais recentes primeiro; opcionalmente filtra por `t.error_type` e `t.error_source`.
+- `render_failures(failures)` — `cli/renderer.py`: tabela `Quando | Tipo | Source | Erro | Tokens`.
+- Handler `/failures [error_type]` no REPL + comando `mi-dream failures`.
+
+### 23.3 Instrumentação (`repl.py`)
+
+Todos os caminhos LLM usam um helper comum:
+
+- `_ask_llm(system, user, history)` — executa `ask_llm_full` no executor (único ponto de chamada).
+- `_trace_outcome(source, name, content, outcome, error_type=None, error_message=None, tokens=0, latency_ms=0.0)` — persiste o trace (nunca levanta, sanitize §18.2) e incrementa `_traces_since_learn` tanto em sucesso quanto em falha.
+
+| Caminho | `source` | `outcome=success` | `outcome=failure` |
+|---|---|---|---|
+| chat regular | `chat` | conteúdo normal | `[ERROR: msg]` no content + `error_type`/`error_message` |
+| `/skill` | `skill` | idem | idem |
+| `@agent` | `agent` | idem | idem |
+| cron job | `cron` | idem | idem |
+
+Em falha: `render_error` mostra a mensagem e o loop continua (degradação graciosa, §13).
+
+### 23.4 Filtros e agrupamento
+
+- `t.error_type` e `t.error_source` são propriedades no nó (Cypher paramétrico, INV-001).
+- Nós criados antes da v2.5 não têm as propriedades → `get_failures` faz fallback para `metadata.error_type`/`metadata.source` e retorna `"unknown"`.
+- `error_type` aceita: `connection_error`, `timeout_error`, `rate_limit_error`, `auth_error`, `permission_error`, `api_error`, `config_error`, `unknown_error`.
+- `source` aceita: `chat`, `skill`, `agent`, `cron`.
+
+### 23.5 Interfaces
+
+| Comando | Onde | Efeito |
+|---|---|---|
+| `/failures [error_type]` | REPL | tabela com as últimas 20 falhas (filtra por tipo se passado) |
+| `uv run mi-dream failures [--limit N] [--type T] [--source S]` | CLI | lista de falhas persistidas |
+
+### 23.6 Invariantes
+
+- Falha de LLM **nunca** aborta o REPL: apenas `render_error` + trace de falha (INV: degradação graciosa).
+- `_trace_outcome` nunca levanta (qualquer exceção de persistência é engolida).
+- `content` do trace de falha é PII-sanitizado (§18.2); `error_message` não contém secrets (origem: exceção, truncada).
+
+### 23.7 FailurePattern — conhecimento negativo (Phase 2)
+
+Fase 1 trata falhas como **monitoramento** (§23.1-23.6). Phase 2 formaliza o caminho de falha como **aprendizado** — sinais positivos e negativos são distintos e não devem ser fundidos:
+
+```
+LLM Failure → FailureTrace (outcome="failure")
+              → FailureAnalysis (agrega por tipo/origem/contexto)
+              → FailurePattern (:FailurePattern {tenant_id, error_type, pattern, failure_count, last_seen})
+```
+
+- `FailurePattern` é nó de primeira classe, **não** o inverso de `Strategy` — tem métricas próprias (`failure_count`, `last_seen`) e ciclo de vida independente.
+- `FailureAnalyzer` agrega `FailureTrace`s (via `PatternMiner`, clustering fuzzy) em padrões reincidentes.
+- O **Strategy Router** passa a consultar tanto `Strategy` (positivo) quanto `FailurePattern` (negativo): o agente recebe "o que costuma funcionar" **e** "o que historicamente falha neste contexto".
+- Relação opcional `AVOIDS` liga `Strategy` ↔ `FailurePattern` (Phase 2).
 
 ---

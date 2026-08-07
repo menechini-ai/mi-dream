@@ -27,6 +27,8 @@ async def save_reasoning_trace(trace_id: str, content: str, metadata: dict, driv
             metadata = {"raw": metadata}
     tenant_id = metadata.get("tenant_id", "default")
     outcome = metadata.get("outcome", "unknown")
+    error_type = metadata.get("error_type")
+    error_source = metadata.get("error_source")
     content = sanitize(content)
     metadata_json = json.dumps(metadata, sort_keys=True, separators=(",", ":"))
     async with driver.session() as session:
@@ -37,6 +39,8 @@ async def save_reasoning_trace(trace_id: str, content: str, metadata: dict, driv
                 content: $content,
                 metadata: $metadata,
                 outcome: $outcome,
+                error_type: $error_type,
+                error_source: $error_source,
                 content_hash: $content_hash,
                 created_at: datetime(),
                 tenant_id: $tenant_id
@@ -46,6 +50,8 @@ async def save_reasoning_trace(trace_id: str, content: str, metadata: dict, driv
             content=content,
             metadata=metadata_json,
             outcome=outcome,
+            error_type=error_type,
+            error_source=error_source,
             content_hash=trace_fingerprint(content, outcome, metadata_json),
             tenant_id=tenant_id,
         )

@@ -38,6 +38,7 @@ Um sistema multi-agente cuja memória de longo prazo **aprende com a própria ex
 | **Knowledge Graph** | `ReasoningTrace → Lesson → Strategy` com máquina de estados, versionamento (`SUPERSEDES`) e deduplicação |
 | **Memória episódica** | Compactação de conversa em `Episode` acima de um limite — auto-compact + auto-learn acionados por contexto |
 | **Daily Review** | Stats do dia + checagens de integridade + resumo narrativo via LLM (`mi-dream review` / `/review`) |
+| **Failure Monitoring** | Falhas de LLM viram traces de falha com tipo/fonte do erro, inspecionáveis via `/failures` e `mi-dream failures` |
 | **Recall vetorial** | `strategy_embedding` (1536-d cosine) com fallback por domínio — degradação graciosa nunca bloqueia a execução |
 | **Multi-tenant** | Isolamento via `tenant_id` em todos os nós (scaffold) |
 
@@ -95,8 +96,8 @@ Um sistema multi-agente cuja memória de longo prazo **aprende com a própria ex
 │  chat → recall → trace   │   traces → lessons → strategies │
 ├──────────────────────────┴────────────────────────────────┤
 │      cli/app.py · repl.py (CLI unificada)                  │
-│      chat · reflect · distill · curator · learn            │
-│      · review · sessions · init                            │
+│      chat · reflect · distill · curator · learn · review   │
+│      · sessions · init · failures                          │
 ├────────────────────────────────────────────────────────────┤
 │  Memória: Neo4j Bolt + vector index · guarda PII · .env    │
 └────────────────────────────────────────────────────────────┘
@@ -147,6 +148,7 @@ ReasoningTrace ──▶ Lesson ──▶ Strategy (EXPERIMENTAL) ──▶ ACTI
 | **Learning** | `learning/scheduler.py` | `ReflectionScheduler.run_cycle()` + orquestrador `run_learning_cycle()` |
 | **Compactor** | `learning/compactor.py` | `ConversationCompactor` — resume + compacta + `persist_episode()` |
 | **Reviewer** | `learning/reviewer.py` | `DailyReviewer` — stats diárias + integridade + resumo LLM |
+| **Failure Monitor** | `learning/failure_analyzer.py` | `get_failures()` — últimas `ReasoningTrace` com falha, filtrável por tipo/fonte |
 | **Knowledge** | `knowledge/` | `models`, `repository`, `router`, `vector`, `distiller`, `curator` |
 | **Memory** | `memory/` | `connection` (driver Bolt), `bootstrap` (schema), `embeddings`, `reasoning` (fingerprint) |
 | **LLM** | `llm/client.py` | `ask_llm_full` / `ask_llm` — wrapper de chat OpenAI-compatible |
@@ -159,7 +161,7 @@ src/mi_dream/
 ├── agents/           # Agents YAML (implementation, research, review) + langchain tools
 ├── cli/              # typer, REPL, sessões, renderer, completer, slash commands, cron, loader
 ├── knowledge/        # Strategy, Lesson, repository, router, vector, distiller, curator
-├── learning/         # Evaluator, Reflector, Scheduler, Compactor, Reviewer
+├── learning/         # Evaluator, Reflector, Scheduler, Compactor, Reviewer, FailureAnalyzer
 ├── llm/              # cliente OpenAI-compatible (ask_llm)
 ├── memory/           # conexão Neo4j, bootstrap do schema, embeddings, fingerprint de traces
 ├── security/         # sanitização de PII
@@ -291,6 +293,7 @@ uv run mi-dream <comando> [args]
 | `/compact` | Compacta a conversa num resumo (`Episode`) e limpa o contexto |
 | `/learn` | Roda um ciclo de aprendizado (reflect → distill → curator) na hora |
 | `/review` | Roda o Daily Review (stats do dia + integridade + resumo LLM) na hora |
+| `/failures [<tipo>]` | Lista as últimas 20 falhas de LLM (opcionalmente filtradas por tipo de erro) |
 | `/status` | Health check (Neo4j + LLM) |
 | `/exit` | Sai (a sessão é salva com seu ID) |
 
@@ -306,6 +309,7 @@ uv run mi-dream <comando> [args]
 | `curator` | Governança: integridade, máquina de estados, dedup |
 | `learn` | Daemon: reflexão automática contínua (reflect → distill → curator) |
 | `review` | Daily Review (stats + integridade + resumo LLM); use `--once` para revisão única |
+| `failures` | Lista falhas de LLM persistidas (`--limit`, `--type`, `--source`) |
 
 ### Mapa de Intenções
 
@@ -325,7 +329,7 @@ uv run pytest          # suite completa
 uv run ruff check src tests
 ```
 
-Suite: **218 passed / 4 skipped** (unitários + integração + load test).
+Suite: **237 passed / 4 skipped** (unitários + integração + load test).
 
 Cobertura inclui: sessões, comandos do REPL, loader/renderer, learning pipeline (reflect/distill/curator), compactação, daily review, knowledge repository/router/vector, integridade de traces, sanitização de segurança, conexão/bootstrap de memória e health.
 

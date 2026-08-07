@@ -24,11 +24,15 @@ class Settings(BaseSettings):
     embedding_dimensions: int = 1536
     llm_max_tokens: int = 4096
     llm_temperature: float = 0.7
+    llm_timeout_seconds: int = 120
     embedding_base_url: str | None = None
     embedding_api_key: str | None = None
     vector_top_k: int = 5
     skills_dir: str = ".midream/skills"
     agents_dir: str = ".midream/agents"
+    agent_max_iterations: int = 5
+    enable_shell_tool: bool = False
+    tool_workdir: str = "."
 
 
 settings = Settings()

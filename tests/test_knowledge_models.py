@@ -77,6 +77,41 @@ def test_strategy_requires_tenant_id():
     assert s.tenant_id == "default"
 
 
+def test_failure_pattern_model():
+    from mi_dream.knowledge.models import FailurePattern
+
+    dt = datetime.now(UTC)
+    fp = FailurePattern(
+        id="fp1",
+        tenant_id="default",
+        error_type="rate_limit_error",
+        domain="general",
+        pattern="Rate limit no provider",
+        failure_count=3,
+        last_seen=dt,
+        created_at=dt,
+        signature="abc123",
+    )
+    assert fp.failure_count == 3
+    assert fp.error_type == "rate_limit_error"
+
+
+def test_failure_pattern_accepts_neo4j_datetime():
+    from mi_dream.knowledge.models import FailurePattern
+
+    dt = datetime.now(UTC)
+    fp = FailurePattern(
+        id="fp1",
+        error_type="api_error",
+        domain="general",
+        pattern="boom",
+        last_seen=_Neo4jDateTime(dt),
+        created_at=_Neo4jDateTime(dt),
+    )
+    assert fp.last_seen == dt
+    assert fp.created_at == dt
+
+
 def test_curator_decision_values():
     assert CuratorDecision.CREATE.value == "CREATE"
     assert CuratorDecision.REINFORCE.value == "REINFORCE"

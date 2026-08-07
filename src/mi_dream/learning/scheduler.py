@@ -2,6 +2,7 @@ from mi_dream.config import settings
 from mi_dream.knowledge.curator import Curator
 from mi_dream.knowledge.distiller import KnowledgeDistiller
 from mi_dream.learning.evaluator import Evaluator
+from mi_dream.learning.failure_analyzer import run_failure_analysis
 from mi_dream.learning.reflector import Reflector
 from mi_dream.memory.connection import get_driver
 from mi_dream.memory.embeddings import build_embedder
@@ -64,7 +65,17 @@ async def run_learning_cycle(tenant_id: str | None = None) -> dict:
     as demais nem a execução (degradação graciosa).
     """
     tenant_id = tenant_id or settings.tenant_id
-    report: dict = {"reflection": None, "distill": None, "curator": None}
+    report: dict = {
+        "failure_analysis": None,
+        "reflection": None,
+        "distill": None,
+        "curator": None,
+    }
+
+    try:
+        report["failure_analysis"] = await run_failure_analysis(tenant_id)
+    except Exception as e:
+        report["failure_analysis"] = {"error": str(e)}
 
     try:
         scheduler = ReflectionScheduler()

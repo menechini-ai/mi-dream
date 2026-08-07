@@ -70,7 +70,7 @@ Central configuration via `pydantic-settings` + `python-dotenv`. Singleton `sett
 |---|---|
 | `tools.py` | langchain tools: `recall_strategy` (vector router) and `save_reasoning_trace` (sanitized persistence) |
 
-> **Implementation note:** the REPL interactive chat route calls `ask_llm` directly (with a prompt built from the `ExecutionContext`). The langchain tools in `tools.py` are the multi-agent task harness (SDD §6) and are exercised via `tests/test_agents_supervisor.py`.
+> **Implementation note:** the REPL interactive chat route calls `ask_llm` directly (with a prompt built from the `ExecutionContext`). The langchain tools in `tools.py` are the agent toolbox, exercised via `tests/test_agents_toolbox.py` and `tests/test_agents_loop.py`.
 
 ### 2.4 `src/mi_dream/knowledge/` — Knowledge Domain
 | File | Responsibility |
@@ -290,7 +290,7 @@ Infra: `docker-compose.yml` starts `neo4j:5.26` with APOC, 1G/512M heaps, and a 
 
 ## 10. Tests
 
-`pytest` (asyncio_mode=auto), `ruff` as linter. 218 passed / 4 skipped.
+`pytest` (asyncio_mode=auto), `ruff` as linter. 237 passed / 4 skipped.
 
 | Group | Covers |
 |---|---|
@@ -311,8 +311,8 @@ uv sync --extra dev      # installs deps + dev deps (NOTE: --dev alone does NOT 
 
 ## 11. Roadmap (SDD §15)
 
-- **Phase 1 (current):** langchain tools, Neo4j bolt, Strategy CRUD + state, automatic reflection, deterministic Distiller, Curator, Lesson as a first-class node, vector recall, Episode compaction (v2.3), context triggers + Daily Review (v2.4).
-- **Phase 2:** Pattern Miner (clustering), LLM Distiller (authoring), Knowledge Librarian (Leiden, compaction, reindexing), `FailurePattern`/`BestPractice`/`Workflow`, `VALIDATES`/`CONTRADICTS`/`ABSTRACTS` relationships, observability (Langfuse/OTel).
+- **Phase 1 (current):** langchain tools, Neo4j bolt, Strategy CRUD + state, automatic reflection, deterministic Distiller, Curator, Lesson as a first-class node, vector recall, Episode compaction (v2.3), context triggers + Daily Review (v2.4), failure monitoring (v2.5: `ReasoningTrace {outcome:"failure"}` + `/failures` + `mi-dream failures`).
+- **Phase 2:** dual-path Learning Pipeline (Success: Evaluator→Reflector; Failure: FailureAnalyzer→FailurePattern → PatternMiner → Distiller → Curator), Pattern Miner (clustering), LLM Distiller (authoring), Knowledge Librarian (compaction, reindexing) — **Leiden deferred** until real data volume, `BestPractice`/`Workflow`, `VALIDATES`/`CONTRADICTS`/`ABSTRACTS`/`AVOIDS` relationships, observability (Langfuse/OTel).
 - **Phase 3:** Capability Graph, cross-tenant, Online Validation (`Validation`, KM-008), Adaptive Retrieval.
 
 ---
@@ -327,3 +327,5 @@ uv sync --extra dev      # installs deps + dev deps (NOTE: --dev alone does NOT 
 - **Execution Context as a runtime object**, not from the graph — swapping the Router does not change the agents.
 - **`prompt_session`/`sess` with distinct names in the REPL** — avoids the shadowing that broke `prompt_async` (regression fixed).
 - **Scheduler in batches of 50** (`LIMIT`) — idempotent cycle (`NOT EXISTS { (:Lesson)-[:DERIVED_FROM]->(t) }`).
+- **Leiden deferred** — community detection only after real data volume (hundreds/thousands of Strategies with usage metrics); otherwise operational complexity without measurable benefit (SDD §15, §17).
+- **FailurePath as negative knowledge** — `FailurePattern` is not the inverse of `Strategy`; success and failure are distinct signals that feed the same Router (positive + negative recall) (SDD §20.3, §23.7).

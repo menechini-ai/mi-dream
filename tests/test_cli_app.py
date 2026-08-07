@@ -173,3 +173,75 @@ def test_review_runs_once():
     mock_review.assert_awaited_once()
 
 
+def test_failures_lists_persisted_failures():
+    from unittest.mock import AsyncMock
+
+    fake = [
+        {
+            "id": "t1",
+            "created_at": "2026-08-07T10:00:00Z",
+            "error_type": "api_error",
+            "source": "skill",
+            "error_message": "boom",
+            "tokens": 9,
+        }
+    ]
+    with patch(
+        "mi_dream.cli.app.get_failures", new=AsyncMock(return_value=fake)
+    ) as mock_get:
+        result = runner.invoke(app, ["failures", "--limit", "5", "--type", "api_error"])
+
+    assert result.exit_code == 0
+    assert "api_error" in result.stdout
+    assert "boom" in result.stdout
+    assert mock_get.call_args.kwargs["limit"] == 5
+    assert mock_get.call_args.kwargs["error_type"] == "api_error"
+
+
+def test_failures_empty():
+    from unittest.mock import AsyncMock
+
+    with patch("mi_dream.cli.app.get_failures", new=AsyncMock(return_value=[])):
+        result = runner.invoke(app, ["failures"])
+
+    assert result.exit_code == 0
+    assert "No failures" in result.stdout
+
+
+def test_failure_patterns_lists_patterns():
+    from unittest.mock import AsyncMock
+
+    fake = [
+        {
+            "id": "fp1",
+            "error_type": "rate_limit_error",
+            "domain": "general",
+            "pattern": "Too Many Requests",
+            "failure_count": 5,
+            "last_seen": "2026-08-07T10:00:00Z",
+        }
+    ]
+    with patch(
+        "mi_dream.cli.app.get_failure_patterns", new=AsyncMock(return_value=fake)
+    ) as mock_get:
+        result = runner.invoke(
+            app, ["failure-patterns", "--limit", "5", "--type", "rate_limit_error"]
+        )
+
+    assert result.exit_code == 0
+    assert "rate_limit_error" in result.stdout
+    assert "Too Many Requests" in result.stdout
+    assert mock_get.call_args.kwargs["limit"] == 5
+    assert mock_get.call_args.kwargs["error_type"] == "rate_limit_error"
+
+
+def test_failure_patterns_empty():
+    from unittest.mock import AsyncMock
+
+    with patch("mi_dream.cli.app.get_failure_patterns", new=AsyncMock(return_value=[])):
+        result = runner.invoke(app, ["failure-patterns"])
+
+    assert result.exit_code == 0
+    assert "No failure patterns" in result.stdout
+
+

@@ -37,10 +37,17 @@ class ExecutionContext:
 
 
 class StrategyRouter:
-    def __init__(self, repo: StrategyRepository, vector_retriever=None, top_k: int = 5):
+    def __init__(
+        self,
+        repo: StrategyRepository,
+        vector_retriever=None,
+        top_k: int = 5,
+        failure_repo=None,
+    ):
         self._repo = repo
         self._vector = vector_retriever
         self._top_k = top_k
+        self._failure_repo = failure_repo
 
     async def retrieve(
         self, goal: str, context: dict[str, Any], tenant_id: str
@@ -59,8 +66,16 @@ class StrategyRouter:
                 domain=domain, tenant_id=tenant_id, state=StrategyState.ACTIVE
             )
 
+        previous_failures = []
+        if self._failure_repo is not None:
+            try:
+                patterns = await self._failure_repo.list_by_domain(domain, tenant_id)
+                previous_failures = [p.model_dump(mode="json") for p in patterns]
+            except Exception:
+                previous_failures = []
+
         if not strategies:
-            return ExecutionContext(goal=goal)
+            return ExecutionContext(goal=goal, previous_failures=previous_failures)
 
         return ExecutionContext(
             goal=goal,
@@ -68,6 +83,6 @@ class StrategyRouter:
             strategies=strategies,
             constraints=context.get("constraints", []),
             capabilities=context.get("capabilities", []),
-            previous_failures=context.get("previous_failures", []),
+            previous_failures=previous_failures,
             best_practices=context.get("best_practices", []),
         )

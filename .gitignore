@@ -25,4 +25,6 @@ venv/
 *.db/
 
 # Runtime state and user data
-.midream/
+.midream/scripts/
+.midream/history
+.pytest_cache
