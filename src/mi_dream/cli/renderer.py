@@ -12,7 +12,7 @@ def render_skills(skills: list[dict]) -> None:
     table.add_column("Name", style="green")
     table.add_column("Description")
     for s in skills:
-        table.add_row(s["name"], s["desc"])
+        table.add_row(s["name"], s.get("description", s.get("desc", "")))
     console.print(table)
 
 
@@ -21,16 +21,16 @@ def render_agents(agents: list[dict]) -> None:
     table.add_column("Name", style="green")
     table.add_column("Description")
     for a in agents:
-        table.add_row(a["name"], a["desc"])
+        table.add_row(a["name"], a.get("description", a.get("desc", "")))
     console.print(table)
 
 
-def render_commands(commands: dict) -> None:
+def render_commands(commands: list[dict]) -> None:
     table = Table(title="Commands", show_header=True, header_style="bold cyan")
     table.add_column("Command", style="green")
     table.add_column("Description")
-    for cmd in commands.values():
-        table.add_row(f"/{cmd.name}", cmd.description)
+    for cmd in commands:
+        table.add_row(f"/{cmd['name']}", cmd.get("desc", ""))
     console.print(table)
 
 

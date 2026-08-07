@@ -9,13 +9,14 @@ from prompt_toolkit.key_binding import KeyBindings
 from mi_dream.agents.tools import save_reasoning_trace
 from mi_dream.cli.commands import COMMANDS, dispatch
 from mi_dream.cli.completer import SlashCompleter
+from mi_dream.cli.cron import CronManager
+from mi_dream.cli.loader import load_agents, load_skills
 from mi_dream.cli.renderer import (
     console,
     render_agents,
     render_commands,
     render_error,
     render_health,
-    render_help,
     render_message,
     render_skills,
     render_status,
@@ -28,11 +29,10 @@ from mi_dream.knowledge.router import ExecutionContext, StrategyRouter
 from mi_dream.llm.client import ask_llm_full
 from mi_dream.memory.connection import get_driver
 
-HISTORY_PATH = str(Path.home() / ".mi-dream" / "history")
+HISTORY_PATH = str(Path.cwd() / ".midream" / "history")
 
 
 def build_system_prompt(context: ExecutionContext) -> str:
-    """Compose the assistant system prompt from the Execution Context contract (SDD §6)."""
     base = "You are a helpful assistant."
     if not context.strategies:
         return base
@@ -43,11 +43,6 @@ def build_system_prompt(context: ExecutionContext) -> str:
 
 
 async def recall_context(goal: str) -> ExecutionContext:
-    """Retrieve the Execution Context via the Strategy Router.
-
-    Graceful degradation (SDD §13): any Router/Neo4j failure yields an empty
-    context — planning continues from scratch, never blocked.
-    """
     try:
         async with get_driver().session(database=settings.neo4j_database) as session:
             router = StrategyRouter(StrategyRepository(session))
@@ -80,6 +75,44 @@ class REPL:
                 self._running = False
                 event.app.exit()
 
+    async def _run_with_skill(self, skill: dict, user_input: str) -> None:
+        system_prompt = skill["prompt"]
+        self._session_mgr.add_message("user", user_input)
+
+        with console.status(f"[bold cyan]Skill: {skill['name']}...", spinner="dots"):
+            resp = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: ask_llm_full(
+                    system=system_prompt,
+                    user_message=user_input,
+                    max_tokens=1024,
+                    history=[{"role": m["role"], "content": m["content"]} for m in self._session_mgr.current().context],
+                ),
+            )
+        assistant_msg = resp.content
+        self._session_mgr.add_message("assistant", assistant_msg)
+        render_message("assistant", assistant_msg)
+        render_status(settings.llm_model, resp.total_tokens, format_latency(resp.latency_ms))
+
+    async def _run_with_agent(self, agent: dict, user_input: str) -> None:
+        system_prompt = agent["prompt"]
+        self._session_mgr.add_message("user", user_input)
+
+        with console.status(f"[bold cyan]Agent: {agent['name']}...", spinner="dots"):
+            resp = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: ask_llm_full(
+                    system=system_prompt,
+                    user_message=user_input,
+                    max_tokens=1024,
+                    history=[{"role": m["role"], "content": m["content"]} for m in self._session_mgr.current().context],
+                ),
+            )
+        assistant_msg = resp.content
+        self._session_mgr.add_message("assistant", assistant_msg)
+        render_message("assistant", assistant_msg)
+        render_status(settings.llm_model, resp.total_tokens, format_latency(resp.latency_ms))
+
     async def run(self) -> None:
         try:
             from mi_dream.memory.bootstrap import ensure_schema
@@ -88,6 +121,7 @@ class REPL:
         except Exception:
             pass
 
+        Path(HISTORY_PATH).parent.mkdir(parents=True, exist_ok=True)
         prompt_session = PromptSession(
             history=FileHistory(HISTORY_PATH),
             completer=self._completer,
@@ -95,14 +129,30 @@ class REPL:
             key_bindings=self._bindings,
             multiline=False,
         )
-        console.print("[bold cyan]mi-dream[/bold cyan] — Multi-Agent Learning System")
+        console.print(f"[bold cyan]mi-dream[/bold cyan] — Model: {settings.llm_model}")
         sess = self._session_mgr.create(new_session_id())
         console.print(f"[dim]Session {sess.name}[/dim] — retomar depois com /session {sess.name}")
         console.print("[dim]Type /help for commands, Ctrl+C to exit[/dim]\n")
 
+        cron_mgr = CronManager()
+
         while self._running:
             try:
-                user_input = await prompt_session.prompt_async("\n> ")
+                for job in cron_mgr.due_jobs():
+                    if job.script:
+                        output = cron_mgr.run_script(job.script)
+                        console.print(f"[dim][cron] Script: {job.script} — {output[:100] or '(silent)'}[/dim]")
+                    else:
+                        console.print(f"[dim][cron] Running: {job.prompt[:60]}...[/dim]")
+                        with console.status(f"[bold cyan]Cron: {job.id}...", spinner="dots"):
+                            resp = await asyncio.get_event_loop().run_in_executor(
+                                None,
+                                lambda: ask_llm_full(system="You are a learning agent. Execute the task.", user_message=job.prompt, max_tokens=1024, history=[]),
+                            )
+                        console.print(f"[dim][cron] Done: {job.id} ({resp.total_tokens} tokens)[/dim]")
+                    cron_mgr.mark_run(job.id)
+
+                user_input = await prompt_session.prompt_async("\n❯ ")
                 if not user_input.strip():
                     continue
 
@@ -111,47 +161,80 @@ class REPL:
                     cmd = parts[0]
                     args = parts[1] if len(parts) > 1 else ""
 
-                    if cmd == "exit":
-                        break
-                    elif cmd == "status":
+                    if cmd == "status":
                         results = await check_all()
                         render_health(results)
-                    elif cmd == "skills":
-                        skills = [{"name": "brainstorming", "desc": "Design exploration"}]
-                        render_skills(skills)
-                    elif cmd == "agents":
-                        agents = [{"name": "Research", "desc": "Codebase exploration"}]
-                        render_agents(agents)
-                    elif cmd == "commands":
-                        render_commands(COMMANDS)
-                    elif cmd == "help":
-                        render_help()
-                    elif cmd == "session":
-                        name = args.strip()
-                        if name:
-                            sess = self._session_mgr.resume(name)
-                            console.print(
-                                f"[cyan]Session {sess.name} resumed"
-                                f" ({len(sess.context)} messages).[/cyan]"
-                            )
+                    elif cmd == "cost":
+                        msgs = self._session_mgr.current().context
+                        user_chars = sum(
+                            len(m["content"]) for m in msgs if m["role"] == "user"
+                        )
+                        assistant_chars = sum(
+                            len(m["content"]) for m in msgs if m["role"] == "assistant"
+                        )
+                        console.print(
+                            f"[bold]Session cost estimate:[/bold]\n"
+                            f"  Messages: {len(msgs)}\n"
+                            f"  Input tokens (est.): {user_chars // 4}\n"
+                            f"  Output tokens (est.): {assistant_chars // 4}\n"
+                            f"  Model: {settings.llm_model}"
+                        )
+                    elif cmd in COMMANDS:
+                        if cmd == "cron" and args.startswith("add "):
+                            cron_mgr = CronManager()
+                            parsed = cron_mgr.parse_chat(f"/cron {args}")
+                            if parsed:
+                                interval, prompt, script = parsed
+                                job = cron_mgr.add(interval, prompt, script=script)
+                                mode = f"script={script}" if script else "agent"
+                                console.print(f"[green]Cron job scheduled:[/green] [{job.id}] every {interval} ({mode}) — \"{job.prompt[:50]}...\"")
+                            else:
+                                console.print("[red]Usage:[/red] /cron add <interval> \"<prompt>\"\n  /cron add <interval> --no-agent --script <file.sh>\nExample: /cron add 1h \"busque sobre SRE\"")
                         else:
-                            sess = self._session_mgr.create(new_session_id())
-                            console.print(
-                                f"[cyan]Started new session {sess.name}.[/cyan]"
-                            )
-                    elif cmd == "clear":
-                        self._session_mgr.clear_context()
-                        console.print("[cyan]Context cleared.[/cyan]")
+                            result = dispatch(cmd, args)
+                            if isinstance(result, list):
+                                if cmd == "skills":
+                                    render_skills(result)
+                                elif cmd == "agents":
+                                    render_agents(result)
+                                elif cmd == "commands":
+                                    render_commands(result)
+                            else:
+                                console.print(result)
                     else:
-                        console.print(dispatch(cmd, args))
+                        skill = next((s for s in load_skills() if s["name"] == cmd), None)
+                        if skill:
+                            await self._run_with_skill(skill, args)
+                        else:
+                            console.print(
+                                f"[red]Unknown: /{cmd}[/red] — Type /help for available commands."
+                            )
+                    continue
+
+                if user_input.startswith("@"):
+                    parts = user_input[1:].split(" ", 1)
+                    agent_name = parts[0]
+                    agent_args = parts[1] if len(parts) > 1 else ""
+                    agent = next((a for a in load_agents() if a["name"] == agent_name), None)
+                    if agent:
+                        await self._run_with_agent(agent, agent_args)
+                    else:
+                        console.print(
+                            f"[red]Unknown agent: @{agent_name}[/red]"
+                            " — Type /agents to list available agents."
+                        )
                     continue
 
                 # Regular input → agent loop
                 self._session_mgr.add_message("user", user_input)
 
-                # Execution Context: recall strategies before planning (graceful degradation)
                 context = await recall_context(user_input)
                 system_prompt = build_system_prompt(context)
+
+                history = [
+                    {"role": m["role"], "content": m["content"]}
+                    for m in self._session_mgr.current().context[:-1]
+                ]
 
                 with console.status("[bold cyan]Thinking...", spinner="dots"):
                     resp = await asyncio.get_event_loop().run_in_executor(
@@ -160,6 +243,7 @@ class REPL:
                             system=system_prompt,
                             user_message=user_input,
                             max_tokens=1024,
+                            history=history,
                         ),
                     )
                 assistant_msg = resp.content
@@ -170,7 +254,6 @@ class REPL:
                     settings.llm_model, resp.total_tokens, format_latency(resp.latency_ms)
                 )
 
-                # Persist a PII-sanitized reasoning trace (SDD §18.2); never block chat on failure
                 try:
                     await save_reasoning_trace(
                         trace_id=f"cli-{uuid4().hex}",

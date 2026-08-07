@@ -27,9 +27,9 @@ def test_full_cli_flow():
     assert len(mgr.current().context) == 2
 
     # 3. Slash commands work
-    assert "brainstorming" in dispatch("skills")
-    assert "Research" in dispatch("agents")
-    assert "/help" in dispatch("commands")
+    assert any(s["name"] == "brainstorming" for s in dispatch("skills"))
+    assert any(a["name"] == "Research" for a in dispatch("agents"))
+    assert any(c["name"] == "commands" for c in dispatch("commands"))
     help_result = dispatch("help")
     assert "mi-dream CLI" in help_result
 

@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-DEFAULT_SESSION_DIR = Path.home() / ".mi-dream" / "sessions"
+DEFAULT_SESSION_DIR = Path.home() / ".midream" / "sessions"
 
 
 def new_session_id() -> str:

@@ -1,6 +1,6 @@
 import os
 import sys
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../src"))
 
@@ -29,10 +29,7 @@ def test_render_agents_prints_table():
 
 def test_render_commands_prints_table():
     with patch("mi_dream.cli.renderer.console") as mock_console:
-        cmd_mock = MagicMock()
-        cmd_mock.name = "skills"
-        cmd_mock.description = "List skills"
-        render_commands({"skills": cmd_mock})
+        render_commands([{"name": "skills", "desc": "List skills"}])
         assert mock_console.print.called
 
 

@@ -20,6 +20,8 @@ class Settings(BaseSettings):
     embedding_dimensions: int = 1536
     embedding_base_url: str | None = None
     embedding_api_key: str | None = None
+    skills_dir: str = ".midream/skills"
+    agents_dir: str = ".midream/agents"
 
 
 settings = Settings()

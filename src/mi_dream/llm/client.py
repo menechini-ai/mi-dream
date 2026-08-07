@@ -33,21 +33,25 @@ class LLMResponse:
     latency_ms: float = 0.0
 
 
-def ask_llm_full(system: str, user_message: str, max_tokens: int = 1024) -> LLMResponse:
+def ask_llm_full(system: str, user_message: str, max_tokens: int = 1024, history: list[dict] | None = None) -> LLMResponse:
     """Send a chat message and return content + token usage + latency.
+
+    ``history`` is optional prior turns (list of {role, content}). When provided,
+    they are sent before the current user message so the LLM has conversation memory.
 
     ``usage`` may be absent on some OpenAI-compatible proxies — both fields
     fall back to 0 in that case.
     """
     client = get_client()
+    messages = [{"role": "system", "content": system}]
+    if history:
+        messages.extend(history)
+    messages.append({"role": "user", "content": user_message})
     start = time.monotonic()
     response = client.chat.completions.create(
         model=settings.llm_model,
         max_tokens=max_tokens,
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": user_message},
-        ],
+        messages=messages,
     )
     latency_ms = (time.monotonic() - start) * 1000
     content = response.choices[0].message.content

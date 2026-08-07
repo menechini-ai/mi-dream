@@ -74,6 +74,28 @@ def _handle_exit(args: str) -> str:
     raise SystemExit(0)
 
 
+def _handle_cron(args: str) -> str:
+    """Manage cron jobs: /cron [list | rm <id>]"""
+    from mi_dream.cli.cron import CronManager
+
+    mgr = CronManager()
+    parts = args.strip().split(" ", 1)
+    if not parts or parts[0] == "list":
+        jobs = mgr.list_jobs()
+        if not jobs:
+            return "No active cron jobs.\nUsage: /cron add 1h \"busque sobre SRE\""
+        lines = ["Active cron jobs:", ""]
+        for j in jobs:
+            mode = f"script={j.script}" if j.script else "agent"
+            lines.append(f"  [{j.id}] {j.prompt[:40] or j.script}... — every {j.interval} ({mode}) (last: {j.last_run or 'never'})")
+        return "\n".join(lines)
+    if parts[0] == "rm" and len(parts) > 1:
+        if mgr.deactivate(parts[1].strip()):
+            return f"Cron job {parts[1]} removed."
+        return f"Cron job {parts[1]} not found."
+    return "Usage: /cron [list | rm <id>] | /cron add <interval> \"<prompt>\""
+
+
 COMMANDS: dict[str, SlashCommand] = {
     "skills": SlashCommand("skills", "List available skills", _handle_skills),
     "agents": SlashCommand("agents", "List available agents", _handle_agents),
@@ -82,6 +104,7 @@ COMMANDS: dict[str, SlashCommand] = {
     "session": SlashCommand("session", "Create or resume session", _handle_session),
     "clear": SlashCommand("clear", "Clear session context", _handle_clear),
     "exit": SlashCommand("exit", "Exit the CLI", _handle_exit),
+    "cron": SlashCommand("cron", "Manage learning cron jobs", _handle_cron),
 }
 
 

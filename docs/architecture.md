@@ -58,7 +58,7 @@ Configuração central via `pydantic-settings` + `python-dotenv`. Singleton `set
 |---|---|
 | `app.py` | CLI typer: `chat`, `sessions`, `init`, `reflect`, `distill`, `curator` |
 | `repl.py` | Loop interativo (`prompt_toolkit`): slash commands, recall antes de responder, grava trace por mensagem, sessões |
-| `session.py` | `SessionManager` + `new_session_id()` — sessões persistentes em JSON (`~/.mi-dream/sessions/*.json`) |
+| `session.py` | `SessionManager` + `new_session_id()` — sessões persistentes em JSON (`~/.midream/sessions/*.json`) |
 | `commands.py` | Registro de slash commands (`COMMANDS` + `dispatch`) |
 | `completer.py` | Autocomplete de `/comandos` no prompt |
 | `renderer.py` | Saída rich (tabelas, painéis, Markdown, health check) |
@@ -219,7 +219,7 @@ Strategy ACTIVE  ──▶  disponível para o recall vetorial (embedding já gr
 
 ### Sessões
 - `new_session_id()` gera `MMDDHHMM-xxxx` (ex.: `08061257-a1b2`) — resumível com `/session <id>`.
-- Persistência em JSON (`~/.mi-dream/sessions/`); `/session` sem args cria sessão nova.
+- Persistência em JSON (`~/.midream/sessions/`); `/session` sem args cria sessão nova.
 
 ---
 

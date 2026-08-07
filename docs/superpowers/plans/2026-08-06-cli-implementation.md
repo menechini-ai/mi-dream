@@ -466,7 +466,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-DEFAULT_SESSION_DIR = Path.home() / ".mi-dream" / "sessions"
+DEFAULT_SESSION_DIR = Path.home() / ".midream" / "sessions"
 
 
 @dataclass
@@ -669,7 +669,7 @@ from mi_dream.config import settings
 from mi_dream.agents.tools import recall_strategy, save_reasoning_trace
 
 
-HISTORY_PATH = str(Path.home() / ".mi-dream" / "history")
+HISTORY_PATH = str(Path.home() / ".midream" / "history")
 
 
 def _display_output(text: str) -> None:

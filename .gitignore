@@ -9,6 +9,9 @@ wheels/
 # Virtual environments
 .venv
 venv/
+.env
+
+.ruff_cache
 
 # Environment
 .env
@@ -20,3 +23,6 @@ venv/
 
 # Neo4j
 *.db/
+
+# Runtime state and user data
+.midream/
