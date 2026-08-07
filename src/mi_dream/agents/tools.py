@@ -8,11 +8,24 @@ from mi_dream.knowledge.repository import StrategyRepository
 from mi_dream.knowledge.router import ExecutionContext, StrategyRouter
 from mi_dream.knowledge.vector import StrategyVectorRetriever
 from mi_dream.memory.connection import get_driver
+from mi_dream.memory.embeddings import build_embedder
 from mi_dream.memory.reasoning import trace_fingerprint
 from mi_dream.observability import get_logger, get_metrics
 from mi_dream.security.sanitizer import sanitize
 
 logger = get_logger("agents.tools")
+
+_embedder = None
+
+
+def _embed(text: str) -> list[float] | None:
+    global _embedder
+    try:
+        if _embedder is None:
+            _embedder = build_embedder()
+        return _embedder.embed_query(text)
+    except Exception:
+        return None
 
 
 async def recall_strategy(
@@ -35,9 +48,9 @@ async def save_reasoning_trace(trace_id: str, content: str, metadata: dict, driv
     error_source = metadata.get("error_source")
     content = sanitize(content)
     metadata_json = json.dumps(metadata, sort_keys=True, separators=(",", ":"))
-    async with driver.session() as session:
-        await session.run(
-            """
+    embedding = _embed(content)
+    if embedding is not None:
+        cypher = """
             CREATE (t:ReasoningTrace {
                 id: $trace_id,
                 content: $content,
@@ -49,16 +62,39 @@ async def save_reasoning_trace(trace_id: str, content: str, metadata: dict, driv
                 created_at: datetime(),
                 tenant_id: $tenant_id
             })
-            """,
-            trace_id=trace_id,
-            content=content,
-            metadata=metadata_json,
-            outcome=outcome,
-            error_type=error_type,
-            error_source=error_source,
+            WITH t
+            CALL db.create.setNodeVectorProperty(t, 'embedding', $embedding)
+            RETURN t
+            """
+        params = dict(
+            trace_id=trace_id, content=content, metadata=metadata_json,
+            outcome=outcome, error_type=error_type, error_source=error_source,
+            content_hash=trace_fingerprint(content, outcome, metadata_json),
+            tenant_id=tenant_id, embedding=embedding,
+        )
+    else:
+        cypher = """
+            CREATE (t:ReasoningTrace {
+                id: $trace_id,
+                content: $content,
+                metadata: $metadata,
+                outcome: $outcome,
+                error_type: $error_type,
+                error_source: $error_source,
+                content_hash: $content_hash,
+                created_at: datetime(),
+                tenant_id: $tenant_id
+            })
+            RETURN t
+            """
+        params = dict(
+            trace_id=trace_id, content=content, metadata=metadata_json,
+            outcome=outcome, error_type=error_type, error_source=error_source,
             content_hash=trace_fingerprint(content, outcome, metadata_json),
             tenant_id=tenant_id,
         )
+    async with driver.session() as session:
+        await session.run(cypher, **params)
 
 
 def make_recall_strategy_tool(tenant_id: str = "default"):

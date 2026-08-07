@@ -85,7 +85,7 @@ class StrategyVectorRetriever:
             retriever.search,
             query_text=goal,
             top_k=top_k or self._top_k,
-            filters={"tenant_id": tenant_id, "state": "ACTIVE", "domain": domain},
+            filters={"tenant_id": tenant_id, "state": "ACTIVE"},
         )
         strategies = []
         for item in result.items:

@@ -47,6 +47,8 @@ from mi_dream.learning.scheduler import run_learning_cycle
 from mi_dream.llm.client import ask_llm_full, extract_llm_error
 from mi_dream.memory.connection import get_driver
 
+logger = get_logger("repl")
+
 HISTORY_PATH = str(Path.cwd() / ".midream" / "history")
 
 TOOL_USE_GUIDANCE = (
@@ -106,6 +108,29 @@ async def _recent_traces(session, tenant_id: str, limit: int = 20) -> list[dict]
         return []
 
 
+async def _semantic_traces(session, goal: str, tenant_id: str, limit: int = 5) -> list[dict]:
+    try:
+        from mi_dream.memory.embeddings import build_embedder
+
+        embedder = build_embedder()
+        query_vec = embedder.embed_query(goal)
+        result = await session.run(
+            """
+            CALL db.index.vector.queryNodes('trace_embedding', $limit, $vec)
+            YIELD node, score
+            WHERE node.tenant_id = $tenant_id
+            RETURN node {.*} AS trace, score
+            ORDER BY score DESC
+            """,
+            vec=query_vec,
+            tenant_id=tenant_id,
+            limit=limit,
+        )
+        return [rec["trace"] async for rec in result]
+    except Exception:
+        return []
+
+
 async def _recent_episodes(session, tenant_id: str, limit: int = 5) -> list[dict]:
     try:
         result = await session.run(
@@ -133,7 +158,19 @@ async def recall_context(goal: str) -> ExecutionContext:
                 failure_repo=FailurePatternRepository(session),
             )
             context = await router.retrieve(goal, {"domain": "general"}, settings.tenant_id)
-            context.recent_traces = await _recent_traces(session, settings.tenant_id)
+            # Semantic traces: find traces similar to current goal
+            semantic_traces = await _semantic_traces(session, goal, settings.tenant_id)
+            # Recency fallback: last N traces
+            recent_traces = await _recent_traces(session, settings.tenant_id)
+            # Merge, dedupe by id, prefer semantic order
+            seen: set[str] = set()
+            merged: list[dict] = []
+            for t in semantic_traces + recent_traces:
+                tid = t.get("id", "")
+                if tid and tid not in seen:
+                    seen.add(tid)
+                    merged.append(t)
+            context.recent_traces = merged[:20]
             context.episodes = await _recent_episodes(session, settings.tenant_id)
             return context
     except Exception:
@@ -235,25 +272,48 @@ class REPL:
             self._session_mgr.add_message("assistant", assistant_msg)
             render_message("assistant", assistant_msg)
             render_status(settings.llm_model, resp.total_tokens, format_latency(resp.latency_ms))
-            await self._trace_outcome(
-                label.lower(),
-                name,
-                f"Q: {user_input}\nA: {assistant_msg}",
-                "success",
-                tokens=resp.total_tokens,
-                latency_ms=resp.latency_ms,
+            # Trace + auto-learn + auto-compact run in background so the input
+            # prompt is released immediately after the response is displayed.
+            asyncio.create_task(
+                self._post_response(
+                    label.lower(), name, user_input, assistant_msg,
+                    "success", resp.total_tokens, resp.latency_ms,
+                )
             )
         except Exception as e:
             error_type, error_message = extract_llm_error(e)
             render_error(f"{error_message} ({error_type})")
-            await self._trace_outcome(
-                label.lower(),
-                name,
-                f"Q: {user_input}\nA: [ERROR: {error_message}]",
-                "failure",
-                error_type=error_type,
-                error_message=error_message,
+            asyncio.create_task(
+                self._post_response(
+                    label.lower(), name, user_input, f"[ERROR: {error_message}]",
+                    "failure", 0, 0, error_type=error_type, error_message=error_message,
+                )
             )
+
+    async def _post_response(
+        self,
+        label: str,
+        name: str,
+        user_input: str,
+        assistant_msg: str,
+        outcome: str,
+        tokens: int = 0,
+        latency_ms: float = 0.0,
+        error_type: str = "",
+        error_message: str = "",
+    ) -> None:
+        """Background work after response is displayed: trace, auto-learn, auto-compact."""
+        try:
+            await self._trace_outcome(
+                label, name,
+                f"Q: {user_input}\nA: {assistant_msg}",
+                outcome, tokens=tokens, latency_ms=latency_ms,
+                error_type=error_type, error_message=error_message,
+            )
+        except Exception:
+            logger.exception("post_response_trace_failed")
+        await self._maybe_auto_learn()
+        await self._maybe_auto_compact()
 
     async def _run_with_skill(self, skill: dict, user_input: str) -> None:
         await self._run_prompt("Skill", skill["name"], skill["prompt"], user_input)
@@ -434,24 +494,20 @@ class REPL:
                             console.print(
                                 f"[dim][cron] Done: {job.id} ({resp.total_tokens} tokens)[/dim]"
                             )
-                            await self._trace_outcome(
-                                "cron",
-                                job.id,
-                                f"Task: {job.prompt}\nA: {resp.content[:2000]}",
-                                "success",
-                                tokens=resp.total_tokens,
-                                latency_ms=resp.latency_ms,
+                            asyncio.create_task(
+                                self._post_response(
+                                    "cron", job.id, job.prompt, resp.content[:2000],
+                                    "success", resp.total_tokens, resp.latency_ms,
+                                )
                             )
                         except Exception as e:
                             error_type, error_message = extract_llm_error(e)
                             console.print(f"[dim][cron] Failed: {job.id} ({error_type})[/dim]")
-                            await self._trace_outcome(
-                                "cron",
-                                job.id,
-                                f"Task: {job.prompt}\nA: [ERROR: {error_message}]",
-                                "failure",
-                                error_type=error_type,
-                                error_message=error_message,
+                            asyncio.create_task(
+                                self._post_response(
+                                    "cron", job.id, job.prompt, f"[ERROR: {error_message}]",
+                                    "failure", 0, 0, error_type=error_type, error_message=error_message,
+                                )
                             )
                     cron_mgr.mark_run(job.id)
 
@@ -571,27 +627,21 @@ class REPL:
                         resp.total_tokens,
                         format_latency(resp.latency_ms),
                     )
-                    await self._trace_outcome(
-                        "chat",
-                        "",
-                        f"Q: {user_input}\nA: {assistant_msg}",
-                        "success",
-                        tokens=resp.total_tokens,
-                        latency_ms=resp.latency_ms,
+                    asyncio.create_task(
+                        self._post_response(
+                            "chat", "", user_input, assistant_msg,
+                            "success", resp.total_tokens, resp.latency_ms,
+                        )
                     )
                 except Exception as e:
                     error_type, error_message = extract_llm_error(e)
                     render_error(f"{error_message} ({error_type})")
-                    await self._trace_outcome(
-                        "chat",
-                        "",
-                        f"Q: {user_input}\nA: [ERROR: {error_message}]",
-                        "failure",
-                        error_type=error_type,
-                        error_message=error_message,
+                    asyncio.create_task(
+                        self._post_response(
+                            "chat", "", user_input, f"[ERROR: {error_message}]",
+                            "failure", 0, 0, error_type=error_type, error_message=error_message,
+                        )
                     )
-                await self._maybe_auto_learn()
-                await self._maybe_auto_compact()
 
             except KeyboardInterrupt:
                 continue

@@ -33,6 +33,10 @@ OPTIONS {{indexConfig: {{`vector.dimensions`: {dims}, `vector.similarity_functio
 CREATE VECTOR INDEX episode_embedding IF NOT EXISTS
 FOR (e:Episode) ON (e.embedding)
 OPTIONS {{indexConfig: {{`vector.dimensions`: {dims}, `vector.similarity_function`: 'cosine'}}}};
+
+CREATE VECTOR INDEX trace_embedding IF NOT EXISTS
+FOR (t:ReasoningTrace) ON (t.embedding)
+OPTIONS {{indexConfig: {{`vector.dimensions`: {dims}, `vector.similarity_function`: 'cosine'}}}};
 """
 
 
