@@ -58,6 +58,23 @@ def test_build_system_prompt_includes_episodes():
     assert "Adilson" in prompt
 
 
+def test_build_system_prompt_includes_failure_patterns():
+    ctx = ExecutionContext(
+        goal="x",
+        previous_failures=[
+            {
+                "error_type": "rate_limit_error",
+                "pattern": "Too Many Requests",
+                "failure_count": 5,
+            }
+        ],
+    )
+    prompt = build_system_prompt(ctx)
+    assert "Known failure patterns" in prompt
+    assert "Too Many Requests" in prompt
+    assert "5" in prompt
+
+
 async def test_recall_context_degrades_gracefully():
     with patch("mi_dream.cli.repl.get_driver", side_effect=RuntimeError("neo4j down")):
         ctx = await recall_context("any goal")
@@ -518,3 +535,53 @@ async def test_repl_handle_failures_empty(tmp_path):
         await repl._handle_failures("")
 
     assert "No failures" in mock_console.print.call_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_repl_handle_patterns_renders(tmp_path):
+    from unittest.mock import AsyncMock
+
+    from mi_dream.cli.repl import REPL
+    from mi_dream.config import settings
+
+    mgr = SessionManager(session_dir=tmp_path)
+    repl = REPL(mgr)
+    fake = [
+        {
+            "id": "fp1",
+            "error_type": "rate_limit_error",
+            "domain": "general",
+            "pattern": "Too Many Requests",
+            "failure_count": 5,
+            "last_seen": "2026-08-07T10:00:00Z",
+        }
+    ]
+
+    with patch(
+        "mi_dream.cli.repl.get_failure_patterns", new=AsyncMock(return_value=fake)
+    ) as mock_get, patch("mi_dream.cli.repl.render_failure_patterns") as mock_render, patch(
+        "mi_dream.cli.repl.console"
+    ):
+        await repl._handle_patterns("rate_limit_error")
+
+    mock_get.assert_awaited_once()
+    assert mock_get.call_args.args[0] == settings.tenant_id
+    assert mock_get.call_args.kwargs["error_type"] == "rate_limit_error"
+    mock_render.assert_called_once_with(fake)
+
+
+@pytest.mark.asyncio
+async def test_repl_handle_patterns_empty(tmp_path):
+    from unittest.mock import AsyncMock
+
+    from mi_dream.cli.repl import REPL
+
+    mgr = SessionManager(session_dir=tmp_path)
+    repl = REPL(mgr)
+
+    with patch(
+        "mi_dream.cli.repl.get_failure_patterns", new=AsyncMock(return_value=[])
+    ), patch("mi_dream.cli.repl.console") as mock_console:
+        await repl._handle_patterns("")
+
+    assert "No failure patterns" in mock_console.print.call_args.args[0]

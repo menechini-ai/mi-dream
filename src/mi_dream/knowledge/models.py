@@ -72,3 +72,36 @@ class Lesson(BaseModel):
     source_trace_ids: list[str]
     confidence: float = Field(ge=0.0, le=1.0)
     tenant_id: str = "default"
+
+
+class FailurePatternCreate(BaseModel):
+    """Conhecimento negativo de primeira classe (SDD §23.7, Phase 2a)."""
+
+    error_type: str = Field(..., max_length=50)
+    domain: str = Field(..., max_length=100)
+    pattern: str
+    tenant_id: str = "default"
+
+
+class FailurePattern(FailurePatternCreate):
+    """Padrão de falha reincidente, agregado pelo FailureAnalyzer.
+
+    Não é o inverso de Strategy: tem métricas próprias (``failure_count``,
+    ``last_seen``) e alimenta o Strategy Router com recall negativo.
+    """
+
+    id: str
+    failure_count: int = 0
+    last_seen: datetime
+    created_at: datetime
+    signature: str = ""
+
+    model_config = {"from_attributes": True}
+
+    @field_validator("last_seen", "created_at", mode="before")
+    @classmethod
+    def coerce_neo4j_datetime(cls, v):
+        """Coerce neo4j.time.DateTime (exposed by the Bolt driver) to datetime."""
+        if hasattr(v, "to_native"):
+            return v.to_native()
+        return v

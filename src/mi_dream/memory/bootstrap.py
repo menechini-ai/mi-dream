@@ -23,6 +23,9 @@ FOR (t:ReasoningTrace) REQUIRE t.id IS UNIQUE;
 CREATE CONSTRAINT daily_review_date IF NOT EXISTS
 FOR (r:DailyReview) REQUIRE (r.tenant_id, r.date) IS UNIQUE;
 
+CREATE CONSTRAINT failure_pattern_id IF NOT EXISTS
+FOR (p:FailurePattern) REQUIRE p.id IS UNIQUE;
+
 CREATE VECTOR INDEX strategy_embedding IF NOT EXISTS
 FOR (s:Strategy) ON (s.embedding)
 OPTIONS {{indexConfig: {{`vector.dimensions`: {dims}, `vector.similarity_function`: 'cosine'}}}};

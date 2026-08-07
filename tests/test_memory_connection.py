@@ -59,6 +59,14 @@ def test_schema_cypher_includes_daily_review_constraint():
     assert "(r.tenant_id, r.date) IS UNIQUE" in cypher
 
 
+def test_schema_cypher_includes_failure_pattern_constraint():
+    from mi_dream.memory.bootstrap import _schema_cypher
+
+    cypher = _schema_cypher()
+    assert "CONSTRAINT failure_pattern_id" in cypher
+    assert "(p:FailurePattern) REQUIRE p.id IS UNIQUE" in cypher
+
+
 @pytest.mark.asyncio
 async def test_ensure_schema_is_idempotent():
     from conftest import make_driver_mock

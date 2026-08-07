@@ -17,6 +17,7 @@ from mi_dream.cli.renderer import (
     render_agents,
     render_commands,
     render_error,
+    render_failure_patterns,
     render_failures,
     render_health,
     render_message,
@@ -26,11 +27,12 @@ from mi_dream.cli.renderer import (
 from mi_dream.cli.session import SessionManager, new_session_id
 from mi_dream.config import settings
 from mi_dream.health import check_all
+from mi_dream.knowledge.failure_patterns import FailurePatternRepository
 from mi_dream.knowledge.repository import StrategyRepository
 from mi_dream.knowledge.router import ExecutionContext, StrategyRouter
 from mi_dream.knowledge.vector import StrategyVectorRetriever
 from mi_dream.learning.compactor import ConversationCompactor
-from mi_dream.learning.failure_analyzer import get_failures
+from mi_dream.learning.failure_analyzer import get_failure_patterns, get_failures
 from mi_dream.learning.reviewer import (
     daily_review_due,
     reviewed_dates,
@@ -51,6 +53,15 @@ def build_system_prompt(context: ExecutionContext) -> str:
         lines.append("Relevant knowledge strategies:")
         for s in context.strategies:
             lines.append(f"- [{s.title}] ({s.domain}): {s.description}")
+    if context.previous_failures:
+        lines.append("")
+        lines.append("Known failure patterns:")
+        for f in context.previous_failures[-5:]:
+            count = f.get("failure_count", 0)
+            lines.append(
+                f"- [{f.get('error_type', 'unknown')} x{count}] "
+                f"{(f.get('pattern') or '')[:200]}"
+            )
     if context.recent_traces:
         lines.append("")
         lines.append("Recent conversation history:")
@@ -105,6 +116,7 @@ async def recall_context(goal: str) -> ExecutionContext:
                 StrategyRepository(session),
                 vector_retriever=StrategyVectorRetriever(top_k=settings.vector_top_k),
                 top_k=settings.vector_top_k,
+                failure_repo=FailurePatternRepository(session),
             )
             context = await router.retrieve(goal, {"domain": "general"}, settings.tenant_id)
             context.recent_traces = await _recent_traces(session, settings.tenant_id)
@@ -302,6 +314,20 @@ class REPL:
             return
         render_failures(failures)
 
+    async def _handle_patterns(self, args: str) -> None:
+        error_type = args.strip() or None
+        try:
+            patterns = await get_failure_patterns(
+                settings.tenant_id, limit=20, error_type=error_type
+            )
+        except Exception as e:
+            render_error(str(e))
+            return
+        if not patterns:
+            console.print("[dim]No failure patterns recorded.[/dim]")
+            return
+        render_failure_patterns(patterns)
+
     async def _daily_review(self) -> None:
         """Hora fixa + catch-up (SDD §22.4): revisa se já passou da hora e o dia
         ainda não foi revisado; depois checa a cada 60 min."""
@@ -449,6 +475,8 @@ class REPL:
                         await self._handle_review()
                     elif cmd == "failures":
                         await self._handle_failures(args)
+                    elif cmd == "patterns":
+                        await self._handle_patterns(args)
                     elif cmd in COMMANDS:
                         if cmd == "cron" and args.startswith("add "):
                             cron_mgr = CronManager()

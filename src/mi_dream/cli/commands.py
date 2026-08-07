@@ -36,6 +36,7 @@ Slash commands:
   /session <n>   Create or resume session <n>
   /clear         Clear session context
   /failures [t]  Show last failed LLM calls (optional error type)
+  /patterns [t]  Show aggregated failure patterns (optional error type)
   /exit          Exit the CLI
 
 Regular input is sent to the Supervisor agent."""
@@ -73,6 +74,13 @@ def _handle_review(args: str) -> str:
 
 def _handle_failures(args: str) -> str:
     return "Run /failures in REPL (or `mi-dream failures`) to list LLM failures."
+
+
+def _handle_patterns(args: str) -> str:
+    return (
+        "Run /patterns in REPL (or `mi-dream failure-patterns`) "
+        "to list aggregated failure patterns."
+    )
 
 
 def _handle_cron(args: str) -> str:
@@ -114,6 +122,9 @@ COMMANDS: dict[str, SlashCommand] = {
     "learn": SlashCommand("learn", "Run a learning cycle", _handle_learn),
     "review": SlashCommand("review", "Run the daily review", _handle_review),
     "failures": SlashCommand("failures", "List failed LLM calls", _handle_failures),
+    "patterns": SlashCommand(
+        "patterns", "List aggregated failure patterns", _handle_patterns
+    ),
 }
 
 

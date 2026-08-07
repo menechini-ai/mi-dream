@@ -5,7 +5,7 @@ import typer
 from mi_dream.cli.repl import REPL
 from mi_dream.cli.session import SessionManager
 from mi_dream.config import settings
-from mi_dream.learning.failure_analyzer import get_failures
+from mi_dream.learning.failure_analyzer import get_failure_patterns, get_failures
 from mi_dream.learning.reviewer import (
     daily_review_due,
     reviewed_dates,
@@ -148,6 +148,35 @@ def failures(
         typer.echo(
             f"[{created}] {row['error_type']} ({row['source']}): "
             f"{row['error_message'][:120]}"
+        )
+
+
+@app.command()
+def failure_patterns(
+    limit: int = typer.Option(20, "--limit", "-n", help="Max patterns to list"),
+    error_type: str | None = typer.Option(None, "--type", help="Filter by error type"),
+    domain: str | None = typer.Option(None, "--domain", help="Filter by domain"),
+):
+    """List aggregated FailurePattern (negative knowledge, SDD §23.7)."""
+
+    async def _run() -> list[dict]:
+        return await get_failure_patterns(
+            settings.tenant_id,
+            limit=limit,
+            error_type=error_type,
+            domain=domain,
+        )
+
+    rows = asyncio.run(_run())
+    if not rows:
+        typer.echo("No failure patterns recorded.")
+        return
+    for row in rows:
+        last = str(row.get("last_seen") or "")[:19]
+        typer.echo(
+            f"[{row['error_type']} x{row.get('failure_count', 0)}] "
+            f"({row.get('domain', 'general')}) {row.get('pattern', '')[:120]} "
+            f"— last {last}"
         )
 
 

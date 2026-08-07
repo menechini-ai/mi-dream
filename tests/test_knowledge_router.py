@@ -109,3 +109,41 @@ def test_execution_context_defaults_recent_memory():
     data = ctx.to_dict()
     assert "recent_traces" in data
     assert "episodes" in data
+
+
+@pytest.mark.asyncio
+async def test_retrieve_fills_previous_failures_from_failure_repo():
+    from mi_dream.knowledge.models import FailurePattern
+
+    repo = AsyncMock(spec=StrategyRepository)
+    repo.list_by_domain.return_value = []
+    failure_repo = AsyncMock()
+    fp = FailurePattern(
+        id="fp1",
+        error_type="rate_limit_error",
+        domain="kubernetes",
+        pattern="Too Many Requests",
+        failure_count=3,
+        last_seen=datetime.now(UTC),
+        created_at=datetime.now(UTC),
+        signature="ab" * 8,
+        tenant_id="default",
+    )
+    failure_repo.list_by_domain.return_value = [fp]
+
+    router = StrategyRouter(repo, failure_repo=failure_repo)
+    ctx = await router.retrieve("x", {"domain": "kubernetes"}, "default")
+
+    assert len(ctx.previous_failures) == 1
+    assert ctx.previous_failures[0]["error_type"] == "rate_limit_error"
+    assert ctx.previous_failures[0]["failure_count"] == 3
+    failure_repo.list_by_domain.assert_awaited_once_with("kubernetes", "default")
+
+
+@pytest.mark.asyncio
+async def test_retrieve_without_failure_repo_leaves_previous_failures_empty():
+    repo = AsyncMock(spec=StrategyRepository)
+    repo.list_by_domain.return_value = []
+    router = StrategyRouter(repo)
+    ctx = await router.retrieve("x", {"domain": "kubernetes"}, "default")
+    assert ctx.previous_failures == []
