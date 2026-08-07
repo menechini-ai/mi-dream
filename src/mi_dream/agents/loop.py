@@ -6,11 +6,41 @@ loop so a model that keeps requesting tools cannot spin forever.
 
 import asyncio
 import json
+import re
 from dataclasses import dataclass, field
 
 from mi_dream.llm.client import ChatTurn, chat_turn
 
 TOOL_LOOP_LIMIT_MESSAGE = "[tool loop limit reached]"
+TOOL_TAG_FALLBACK = (
+    "[The assistant attempted to use tools but returned no usable answer. "
+    "Try rephrasing your question.]"
+)
+
+_TOOL_TAGS = (
+    "tool_call",
+    "invoke",
+    "antml:invoke",
+    "web_search",
+    "web_fetch",
+    "search",
+    "function_call",
+    "assistant_message",
+)
+_TOOL_BLOCK_RE = re.compile(
+    rf"<\s*(?P<tag>{'|'.join(_TOOL_TAGS)})\b[^>]*>.*?</\s*(?P=tag)\s*>", re.S
+)
+_TOOL_SELF_CLOSE_RE = re.compile(
+    rf"<\s*(?:{'|'.join(_TOOL_TAGS)})\b[^>]*/>", re.S
+)
+
+
+def strip_tool_tags(content: str) -> str:
+    """Remove raw tool tags (e.g. ``<web_search>...</web_search>``) the model
+    may emit as text instead of structured tool calls."""
+    cleaned = _TOOL_BLOCK_RE.sub("", content)
+    cleaned = _TOOL_SELF_CLOSE_RE.sub("", cleaned)
+    return re.sub(r"\n{3,}", "\n\n", cleaned).strip()
 
 
 class Tool:
@@ -136,8 +166,11 @@ async def run_tool_loop(
         latency_ms += turn.latency_ms
 
         if not turn.tool_calls:
+            content = strip_tool_tags(turn.content)
+            if not content:
+                content = TOOL_TAG_FALLBACK
             return AgentResult(
-                content=turn.content,
+                content=content,
                 iterations=iteration + 1,
                 tool_calls=tool_calls_done,
                 total_tokens=total_tokens,

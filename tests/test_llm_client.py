@@ -16,6 +16,107 @@ def _mock_response(content="hello", usage=None):
     return mock_response
 
 
+def _mock_tool_call_response(content=None, tool_calls=None, usage=None):
+    mock_response = MagicMock()
+    msg = MagicMock()
+    msg.content = content
+    msg.tool_calls = tool_calls or []
+    mock_response.choices = [MagicMock(message=msg)]
+    mock_response.usage = usage
+    return mock_response
+
+
+def test_chat_turn_no_tools_sends_only_messages():
+    from mi_dream.llm.client import chat_turn
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.return_value = _mock_tool_call_response("ok")
+
+    with patch("mi_dream.llm.client.get_client", return_value=mock_client):
+        turn = chat_turn([{"role": "user", "content": "hi"}])
+
+    kwargs = mock_client.chat.completions.create.call_args.kwargs
+    assert "tools" not in kwargs
+    assert turn.content == "ok"
+    assert turn.tool_calls == []
+
+
+def test_chat_turn_sends_tools_schema():
+    from mi_dream.llm.client import chat_turn
+
+    tools_schema = [
+        {"type": "function", "function": {"name": "web_search", "parameters": {}}}
+    ]
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.return_value = _mock_tool_call_response("ok")
+
+    with patch("mi_dream.llm.client.get_client", return_value=mock_client):
+        turn = chat_turn([{"role": "user", "content": "hi"}], tools=tools_schema)
+
+    kwargs = mock_client.chat.completions.create.call_args.kwargs
+    assert kwargs["tools"] == tools_schema
+    assert turn.content == "ok"
+
+
+def test_chat_turn_parses_tool_calls():
+    from mi_dream.llm.client import ToolCall, chat_turn
+
+    tc = MagicMock()
+    tc.id = "call_1"
+    tc.function.name = "web_search"
+    tc.function.arguments = '{"query": "x"}'
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.return_value = _mock_tool_call_response(
+        None, [tc]
+    )
+
+    with patch("mi_dream.llm.client.get_client", return_value=mock_client):
+        turn = chat_turn([{"role": "user", "content": "hi"}])
+
+    assert len(turn.tool_calls) == 1
+    assert isinstance(turn.tool_calls[0], ToolCall)
+    assert turn.tool_calls[0].id == "call_1"
+    assert turn.tool_calls[0].name == "web_search"
+    assert turn.tool_calls[0].arguments == '{"query": "x"}'
+    assert turn.content == "[empty response from provider]"
+
+
+def test_chat_turn_reports_usage_and_latency():
+    from mi_dream.llm.client import chat_turn
+
+    usage = MagicMock()
+    usage.total_tokens = 42
+    usage.prompt_tokens = 20
+    usage.completion_tokens = 22
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.return_value = _mock_tool_call_response(
+        "ok", usage=usage
+    )
+
+    with patch("mi_dream.llm.client.get_client", return_value=mock_client):
+        turn = chat_turn([{"role": "user", "content": "hi"}])
+
+    assert turn.total_tokens == 42
+    assert turn.prompt_tokens == 20
+    assert turn.completion_tokens == 22
+    assert turn.latency_ms >= 0
+
+
+def test_chat_turn_sends_timeout_from_settings():
+    from mi_dream.llm.client import chat_turn
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.return_value = _mock_tool_call_response("ok")
+
+    with patch("mi_dream.llm.client.get_client", return_value=mock_client), patch(
+        "mi_dream.llm.client.settings.llm_timeout_seconds", 45
+    ):
+        chat_turn([{"role": "user", "content": "hi"}])
+
+    kwargs = mock_client.chat.completions.create.call_args.kwargs
+    assert kwargs["timeout"] == 45
+
+
 def test_ask_llm_full_reports_usage_and_latency():
     usage = MagicMock()
     usage.total_tokens = 42

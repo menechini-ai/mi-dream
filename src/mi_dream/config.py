@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     embedding_dimensions: int = 1536
     llm_max_tokens: int = 4096
     llm_temperature: float = 0.7
+    llm_timeout_seconds: int = 120
     embedding_base_url: str | None = None
     embedding_api_key: str | None = None
     vector_top_k: int = 5

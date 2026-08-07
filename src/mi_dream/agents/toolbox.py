@@ -6,6 +6,7 @@ alternative providers. Filesystem tools are scoped to ``tool_workdir`` and
 reject paths that escape it. ``exec`` is opt-in via ``ENABLE_SHELL_TOOL=true``.
 """
 
+import re
 import subprocess
 import urllib.parse
 import urllib.request
@@ -22,7 +23,14 @@ EDIT_FILE_MAX = 200000
 EXEC_OUTPUT_MAX_CHARS = 5000
 LIST_DIR_MAX_ENTRIES = 200
 MAX_SEARCH_COUNT = 10
-DEFAULT_SEARCH_URL = "https://html.duckduckgo.com/html/"
+DEFAULT_SEARCH_URL = "https://lite.duckduckgo.com/lite/"
+
+_RESULT_LINK_RE = re.compile(
+    r'<a[^>]*class=["\']result-link["\'][^>]*>(.*?)</a>', re.S
+)
+_RESULT_SNIPPET_RE = re.compile(
+    r"<td[^>]*class=['\"]result-snippet['\"][^>]*>(.*?)</td>", re.S
+)
 
 
 class _TextExtractor(HTMLParser):
@@ -58,48 +66,43 @@ def _extract_text(html: str, max_chars: int = 8000) -> str:
 
 
 def _http_get(url: str, timeout: float) -> str:
-    request = urllib.request.Request(url, headers={"User-Agent": "mi-dream/0.1"})
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) mi-dream/0.1",
+            "Accept": "text/html,application/xhtml+xml",
+        },
+    )
     with urllib.request.urlopen(request, timeout=timeout) as resp:
         return resp.read().decode("utf-8", errors="replace")
 
 
 def default_search(query: str, count: int) -> list[dict]:
-    """DuckDuckGo HTML search via stdlib. Returns top ``count`` results."""
+    """DuckDuckGo Lite search via stdlib. Returns top ``count`` results."""
     count = max(1, min(count, MAX_SEARCH_COUNT))
     url = f"{DEFAULT_SEARCH_URL}?q={urllib.parse.quote(query)}"
     html = _http_get(url, WEB_SEARCH_TIMEOUT)
+    links: list[tuple[str, str]] = []
+    for match in _RESULT_LINK_RE.finditer(html):
+        tag = match.group(0)
+        title = _extract_text(match.group(1), 300).strip()
+        params = urllib.parse.parse_qs(urllib.parse.urlparse(tag).query)
+        if "uddg" not in params:
+            continue
+        href = urllib.parse.unquote(params["uddg"][0])
+        if href.startswith("//"):
+            href = "https:" + href
+        if not href.startswith("http"):
+            continue
+        links.append((href, title))
+    snippets = [
+        _extract_text(m.group(1), 300).strip()
+        for m in _RESULT_SNIPPET_RE.finditer(html)
+    ]
     results: list[dict] = []
-    # html.duckduckgo.com marks results with result__a / result__snippet links.
-    marker = 'class="result__a"'
-    cursor = 0
-    while len(results) < count:
-        start = html.find(marker, cursor)
-        if start == -1:
-            break
-        link_open = html.find("<a", max(0, start - 400))
-        if link_open == -1:
-            break
-        href_start = html.find('href="', link_open) + len('href="')
-        href_end = html.find('"', href_start)
-        href = html[href_start:href_end]
-        title_start = html.find(">", href_end) + 1
-        title_end = html.find("</a>", title_start)
-        title = html[title_start:title_end]
-        snippet_start = html.find("result__snippet", title_end)
-        snippet = ""
-        if snippet_start != -1:
-            s_tag = html.find(">", snippet_start) + 1
-            s_end = html.find("</", s_tag)
-            if s_end != -1:
-                snippet = html[s_tag:s_end]
-        results.append(
-            {
-                "title": title.strip(),
-                "url": href,
-                "snippet": snippet.strip(),
-            }
-        )
-        cursor = max(start + 1, title_end + 1)
+    for i, (href, title) in enumerate(links[:count]):
+        snippet = snippets[i] if i < len(snippets) else ""
+        results.append({"title": title, "url": href, "snippet": snippet})
     return results
 
 

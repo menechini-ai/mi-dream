@@ -38,7 +38,7 @@ O diferencial arquitetural: o grafo Neo4j evolui a partir de *reasoning traces* 
 
 | Camada | Tecnologia | Motivo |
 |---|---|---|
-| Orquestração de agentes | `deepagents` (LangGraph por baixo) | Harness pronto (planning, sub-agents, filesystem); LangGraph moderno resolve a objeção de "framework esconde execução" |
+| Orquestração de agentes | `langchain-core` tools + agent loop customizado (`agents/loop.py`) | Zero abstração oculta: tool-use loop direto sobre `ask_llm`; toolbox (`agents/toolbox.py`) com web, file e exec |
 | Memória (short/long/reasoning) | `neo4j-agent-memory`, self-hosted/bolt | 100% Python, `pip install`, permite Cypher direto pro que o SDK não expõe |
 | Grafo | Neo4j 5.20+ | Vector index nativo + Cypher |
 | Observability de prompt/versão | Langfuse/OTel (fora do grafo) | Não polui o grafo de conhecimento com metadados de engenharia |
@@ -210,14 +210,23 @@ Permite responder perguntas como "quais estratégias existem para diagnóstico d
 ## 6. Componentes de Execução
 
 ```
-DeepAgents Supervisor/Planner
-  ├─ Research Agent (sub-agent)
-  └─ Execution Agent (sub-agent)
+REPL / CLI
+   │
+   ├─ ask_llm(system, user)          → resposta direta do LLM
+   ├─ toolbox.run(name, args)         → tool calls (web, file, exec)
+   └─ agent loop (loop.py)            → tool-use multi-turn (ainvoke + tool results)
 ```
 
-**Tools do Supervisor:**
-- `recall_strategy` — consulta o Strategy Router antes de planejar. Recuperação vetorial com `StrategyVectorRetriever` (embedding via `OpenAIEmbeddings`, índice `strategy_embedding` 1536-d cosine, filtros `{tenant_id, state: ACTIVE, domain}`); se o vector search falhar ou voltar vazio, cai para `StrategyRepository.list_by_domain(domain, tenant_id, ACTIVE)`. Embedding das Strategies é gravado pelo Knowledge Distiller no CREATE.
+**Tools disponíveis no agent loop (`agents/toolbox.py`):**
+- `recall_strategy` — consulta o Strategy Router antes de responder. Recuperação vetorial com `StrategyVectorRetriever` (embedding via `OpenAIEmbeddings`, índice `strategy_embedding` 1536-d cosine, filtros `{tenant_id, state: ACTIVE, domain}`); se o vector search falhar ou voltar vazio, cai para `StrategyRepository.list_by_domain(domain, tenant_id, ACTIVE)`. Embedding das Strategies é gravado pelo Knowledge Distiller no CREATE.
 - `save_reasoning_trace` — grava trace via `memory.reasoning`
+- `web_search`, `web_fetch` — busca e fetch web
+- `read_file`, `edit_file`, `list_dir` — filesystem sandboxado
+- `exec` — shell commands (condicional via `enable_shell_tool`)
+
+**Agent loop (`agents/loop.py`):**
+- `run_tool_loop(system, user, toolbox, max_iterations)` — multi-turn: LLM responde ou chama tools → executa → feed de volta → até resposta final ou limite
+- Zero framework: async puro sobre `ask_llm_full`, sem LangGraph/LangChain agent
 
 **Execution Context (contrato de runtime):**
 - `goal` — objetivo da tarefa
@@ -231,8 +240,6 @@ DeepAgents Supervisor/Planner
 - `episodes` — resumos de conversas anteriores (`Episode`, memória episódica compactada, v2.3)
 
 Esse contrato facilita trocar o Router sem alterar os agentes.
-
-**Regra de discrepância:** se o Research Agent trouxer dado que contradiz a Strategy retornada, o Supervisor sinaliza a discrepância explicitamente na resposta, em vez de escolher silenciosamente uma fonte.
 
 ---
 
@@ -261,13 +268,13 @@ Knowledge Librarian
 ## 8. Fluxo Arquitetural
 
 ```
-                         DeepAgents
+                         CLI / REPL
                               │
-                    Supervisor / Planner
+                    agent loop + toolbox
                               │
          ┌────────────────────┴────────────────────┐
          │                                         │
-  Research Agent                           Execution Agent
+  web/file tools                            exec (conditional)
          │                                         │
          └───────────────┬─────────────────────────┘
                          │
@@ -296,7 +303,7 @@ Knowledge Librarian
    Strategy Router            Knowledge Librarian
            │                (serviço contínuo:
            ▼                 reindexação, Leiden,
-  DeepAgents Supervisor       compactação hierárquica)
+  Agent loop + toolbox        compactação hierárquica)
 ```
 
 **Nota estrutural:** o Knowledge Librarian atua diretamente sobre o Knowledge Graph como serviço contínuo (reindexação, detecção de comunidades, manutenção de índices), independente da criação de novas estratégias — não é uma etapa sequencial do pipeline.
@@ -384,7 +391,7 @@ TraceCreated
 
 **Availability**
 - Learning Pipeline pode ficar indisponível sem afetar execução.
-- Comportamento de degradação explícito: se a Learning Pipeline estiver offline, `Strategy Router` retorna vazio e o Supervisor planeja do zero — nunca bloqueia a execução.
+- Comportamento de degradação explícito: se a Learning Pipeline estiver offline, `Strategy Router` retorna vazio e o agent loop planeja do zero — nunca bloqueia a execução.
 
 **Scalability**
 - 10 milhões de nós
@@ -425,7 +432,7 @@ TraceCreated
 
 ```
 Phase 1 (implementado)
-  - LangChain tools / REPL (DeepAgents substituído em v2.4)
+  - LangChain tools / REPL (agent loop customizado, v2.4)
   - Neo4j Agent Memory (self-hosted/bolt)
   - Strategy (CRUD básico)
   - Reflection (cron simples)

@@ -92,6 +92,7 @@ def ask_llm_full(
         max_tokens=max_tokens,
         temperature=settings.llm_temperature,
         messages=messages,
+        timeout=settings.llm_timeout_seconds,
     )
     latency_ms = (time.monotonic() - start) * 1000
     content = response.choices[0].message.content
@@ -152,6 +153,7 @@ def chat_turn(
     }
     if tools:
         kwargs["tools"] = tools
+    kwargs["timeout"] = settings.llm_timeout_seconds
     start = time.monotonic()
     response = client.chat.completions.create(**kwargs)
     latency_ms = (time.monotonic() - start) * 1000

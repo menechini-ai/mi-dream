@@ -492,7 +492,7 @@ async def test_repl_chat_failure_persists_and_continues(tmp_path):
 
     with (
         patch("mi_dream.cli.repl.PromptSession") as MockPS,
-        patch("mi_dream.cli.repl.ask_llm_full", side_effect=ConnectionError("boom")) as mock_llm,
+        patch("mi_dream.cli.repl.run_tool_loop", side_effect=ConnectionError("boom")) as mock_loop,
         patch("mi_dream.cli.repl.save_reasoning_trace", new=fake_save),
         patch(
             "mi_dream.cli.repl.recall_context",
@@ -509,11 +509,71 @@ async def test_repl_chat_failure_persists_and_continues(tmp_path):
         mgr.create("s1")
         await REPL(mgr).run()
 
-    assert mock_llm.call_count == 2
+    assert mock_loop.call_count == 2
     assert len(captured) == 2
     assert all(m["outcome"] == "failure" for m in captured)
     assert all(m["error_type"] == "connection_error" for m in captured)
     assert all(m["source"] == "chat" for m in captured)
+
+
+@pytest.mark.asyncio
+async def test_repl_chat_runs_tool_loop_and_saves_trace(tmp_path):
+    from unittest.mock import AsyncMock, MagicMock
+
+    from mi_dream.agents.loop import AgentResult
+    from mi_dream.cli.repl import REPL
+    from mi_dream.knowledge.router import ExecutionContext
+
+    inputs = iter(["oi"])
+
+    async def fake_prompt(*args, **kwargs):
+        try:
+            return next(inputs)
+        except StopIteration:
+            raise SystemExit
+
+    captured = []
+
+    async def fake_save(trace_id, content, metadata, driver):
+        captured.append(metadata)
+
+    async def fake_loop(system, user, history, toolbox=None, **kwargs):
+        assert toolbox is not None
+        assert "web_search" in system
+        return AgentResult(
+            content="resposta com ferramentas",
+            iterations=2,
+            tool_calls=1,
+            total_tokens=12,
+            latency_ms=7.0,
+        )
+
+    with (
+        patch("mi_dream.cli.repl.PromptSession") as MockPS,
+        patch("mi_dream.cli.repl.run_tool_loop", new=fake_loop),
+        patch("mi_dream.cli.repl.save_reasoning_trace", new=fake_save),
+        patch(
+            "mi_dream.cli.repl.recall_context",
+            new=AsyncMock(return_value=ExecutionContext(goal="oi")),
+        ),
+        patch("mi_dream.cli.repl.run_learning_cycle", new=AsyncMock(return_value={})),
+        patch("mi_dream.cli.repl.reviewed_dates", new=AsyncMock(return_value=set())),
+        patch("mi_dream.cli.repl.render_message"),
+        patch("mi_dream.cli.repl.render_status"),
+        patch("mi_dream.cli.repl.console"),
+    ):
+        MockPS.return_value = MagicMock()
+        MockPS.return_value.prompt_async = fake_prompt
+        mgr = SessionManager(session_dir=tmp_path)
+        mgr.create("s1")
+        await REPL(mgr).run()
+
+    last = mgr.current().context[-1]
+    assert last["role"] == "assistant"
+    assert last["content"] == "resposta com ferramentas"
+    assert captured[0]["outcome"] == "success"
+    assert captured[0]["source"] == "chat"
+    assert captured[0]["tokens"] == 12
 
 
 @pytest.mark.asyncio

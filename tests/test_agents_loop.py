@@ -129,3 +129,37 @@ async def test_run_tool_loop_accumulates_usage(monkeypatch):
     assert result.prompt_tokens == 4
     assert result.completion_tokens == 6
     assert result.latency_ms >= 0
+
+
+def test_strip_tool_tags_removes_raw_tool_blocks():
+    from mi_dream.agents.loop import strip_tool_tags
+
+    content = (
+        "<tool_call>do <web_search>AI news</web_search></tool_call>\n"
+        "Here is the answer."
+    )
+    cleaned = strip_tool_tags(content)
+    assert "<web_search>" not in cleaned
+    assert "<tool_call>" not in cleaned
+    assert "Here is the answer." in cleaned
+
+
+def test_strip_tool_tags_leaves_normal_text():
+    from mi_dream.agents.loop import strip_tool_tags
+
+    assert strip_tool_tags("just plain text with <not_a_tool>") == (
+        "just plain text with <not_a_tool>"
+    )
+
+
+async def test_run_tool_loop_all_tags_falls_back(monkeypatch):
+    def fake_chat_turn(messages, tools, max_tokens):
+        return ChatTurn(
+            content="<tool_call><web_search>q</web_search></tool_call>",
+            tool_calls=[],
+        )
+
+    monkeypatch.setattr("mi_dream.agents.loop.chat_turn", fake_chat_turn)
+    result = await run_tool_loop("sys", "hello")
+    assert "tool" in result.content.lower()
+    assert "<web_search>" not in result.content

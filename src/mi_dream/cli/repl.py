@@ -7,6 +7,8 @@ from prompt_toolkit import PromptSession
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 
+from mi_dream.agents.loop import run_tool_loop
+from mi_dream.agents.toolbox import build_chat_toolbox
 from mi_dream.agents.tools import save_reasoning_trace
 from mi_dream.cli.commands import COMMANDS, dispatch
 from mi_dream.cli.completer import SlashCompleter
@@ -43,6 +45,16 @@ from mi_dream.llm.client import ask_llm_full, extract_llm_error
 from mi_dream.memory.connection import get_driver
 
 HISTORY_PATH = str(Path.cwd() / ".midream" / "history")
+
+TOOL_USE_GUIDANCE = (
+    "\n\nAvailable functions: web_search(query, count=5) to search the web; "
+    "web_fetch(url, max_chars) to read a page; read_file/list_dir/edit_file to "
+    "work with project files; exec(command, timeout) to run a shell command if "
+    "enabled. Always call functions through the function-calling API — never "
+    "emit raw <web_search> or <tool_call> tags as text. When web_search returns "
+    "no results, try a different query or web_fetch a likely URL. Answer in the "
+    "user's language once you have enough information."
+)
 
 
 def build_system_prompt(context: ExecutionContext) -> str:
@@ -140,6 +152,7 @@ class REPL:
         self._bindings = KeyBindings()
         self._traces_since_learn = 0
         self._reviewed_dates: set[str] = set()
+        self._toolbox = build_chat_toolbox()
         self._setup_bindings()
 
     def _setup_bindings(self) -> None:
@@ -160,6 +173,16 @@ class REPL:
                 max_tokens=settings.llm_max_tokens,
                 history=history,
             ),
+        )
+
+    async def _ask_with_tools(self, system: str, user: str, history: list[dict]):
+        return await run_tool_loop(
+            system + TOOL_USE_GUIDANCE,
+            user,
+            history,
+            toolbox=self._toolbox,
+            max_iterations=settings.agent_max_iterations,
+            max_tokens=settings.llm_max_tokens,
         )
 
     async def _trace_outcome(
@@ -532,7 +555,7 @@ class REPL:
 
                 try:
                     with console.status("[bold cyan]Thinking...", spinner="dots"):
-                        resp = await self._ask_llm(system_prompt, user_input, history)
+                        resp = await self._ask_with_tools(system_prompt, user_input, history)
                     assistant_msg = resp.content
 
                     self._session_mgr.add_message("assistant", assistant_msg)

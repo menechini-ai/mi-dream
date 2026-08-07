@@ -70,7 +70,7 @@ Central configuration via `pydantic-settings` + `python-dotenv`. Singleton `sett
 |---|---|
 | `tools.py` | langchain tools: `recall_strategy` (vector router) and `save_reasoning_trace` (sanitized persistence) |
 
-> **Implementation note:** the REPL interactive chat route calls `ask_llm` directly (with a prompt built from the `ExecutionContext`). The langchain tools in `tools.py` are the multi-agent task harness (SDD §6) and are exercised via `tests/test_agents_supervisor.py`.
+> **Implementation note:** the REPL interactive chat route calls `ask_llm` directly (with a prompt built from the `ExecutionContext`). The langchain tools in `tools.py` are the agent toolbox, exercised via `tests/test_agents_toolbox.py` and `tests/test_agents_loop.py`.
 
 ### 2.4 `src/mi_dream/knowledge/` — Knowledge Domain
 | File | Responsibility |
