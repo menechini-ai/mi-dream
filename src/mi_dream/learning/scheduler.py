@@ -44,7 +44,7 @@ SET t.processing_status = "PENDING",
     t.next_attempt_at = datetime() + duration({hours: 1})
 """
 
-WORKER_ID = os.getenv("MI_DREAM_WORKER_ID", f"worker-{os.pid}")
+WORKER_ID = os.getenv("MI_DREAM_WORKER_ID", f"worker-{os.getpid()}")
 
 
 class ReflectionScheduler:
