@@ -208,6 +208,7 @@ async def test_run_failure_analysis_groups_and_links():
     assert repo.link_trace.call_count == 2
     sig = repo.create.call_args.kwargs["signature"]
     assert isinstance(sig, str) and len(sig) == 16
+    assert repo.create.call_args.kwargs["initial_count"] == 2
 
 
 @pytest.mark.asyncio
@@ -216,7 +217,12 @@ async def test_run_failure_analysis_increments_existing():
 
     from mi_dream.learning.failure_analyzer import run_failure_analysis
 
-    session = _session_for([_trace(id="t1", error_type="api_error")])
+    session = _session_for(
+        [
+            _trace(id="t1", error_type="api_error"),
+            _trace(id="t2", error_type="api_error", error_source="skill"),
+        ]
+    )
     driver = make_driver_mock(session)
     repo = MagicMock()
     repo.find_by_signature = AsyncMock(return_value=MagicMock(id="fp1"))
@@ -227,5 +233,5 @@ async def test_run_failure_analysis_increments_existing():
 
     assert report["patterns_updated"] == 1
     assert report["patterns_created"] == 0
-    repo.increment.assert_awaited_once_with("fp1")
-    repo.link_trace.assert_awaited_once()
+    repo.increment.assert_awaited_once_with("fp1", 2)
+    assert repo.link_trace.call_count == 2

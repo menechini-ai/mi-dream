@@ -102,7 +102,7 @@ async def run_failure_analysis(
         for (error_type, domain, sig), group in groups.items():
             existing = await repo.find_by_signature(sig, tenant_id)
             if existing:
-                await repo.increment(existing.id)
+                await repo.increment(existing.id, len(group))
                 pattern_id = existing.id
                 updated += 1
             else:
@@ -114,6 +114,7 @@ async def run_failure_analysis(
                         tenant_id=tenant_id,
                     ),
                     signature=sig,
+                    initial_count=len(group),
                 )
                 pattern_id = pattern.id
                 created += 1

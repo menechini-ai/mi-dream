@@ -15,7 +15,7 @@ class FailurePatternRepository:
         self._session = session
 
     async def create(
-        self, data: FailurePatternCreate, signature: str = ""
+        self, data: FailurePatternCreate, signature: str = "", initial_count: int = 0
     ) -> FailurePattern:
         result = await self._session.run(
             """
@@ -24,7 +24,7 @@ class FailurePatternRepository:
                 error_type: $error_type,
                 domain: $domain,
                 pattern: $pattern,
-                failure_count: 0,
+                failure_count: $initial_count,
                 last_seen: datetime(),
                 created_at: datetime(),
                 signature: $signature,
@@ -36,6 +36,7 @@ class FailurePatternRepository:
             domain=data.domain,
             pattern=data.pattern,
             signature=signature,
+            initial_count=initial_count,
             tenant_id=data.tenant_id,
         )
         record = await result.single()
@@ -96,15 +97,18 @@ class FailurePatternRepository:
         )
         return [FailurePattern(**r["fp"]) async for r in result]
 
-    async def increment(self, pattern_id: str) -> FailurePattern | None:
+    async def increment(
+        self, pattern_id: str, amount: int = 1
+    ) -> FailurePattern | None:
         result = await self._session.run(
             """
             MATCH (p:FailurePattern {id: $id})
-            SET p.failure_count = p.failure_count + 1,
+            SET p.failure_count = p.failure_count + $amount,
                 p.last_seen = datetime()
             RETURN p {.*} AS fp
             """,
             id=pattern_id,
+            amount=amount,
         )
         record = await result.single()
         return FailurePattern(**record["fp"]) if record else None
