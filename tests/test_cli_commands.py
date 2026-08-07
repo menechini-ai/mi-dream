@@ -4,7 +4,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../src"))
 
 from mi_dream.cli.commands import COMMANDS, dispatch
-from mi_dream.cli.loader import invalidate_cache, load_agents, load_skills
+from mi_dream.cli.loader import load_agents, load_skills
 
 
 def test_skills_returns_list_of_dicts():
@@ -63,7 +63,7 @@ def test_all_commands_registered():
 
 
 def test_load_skills_from_yaml():
-    invalidate_cache()
+    load_skills.cache_clear()
     skills = load_skills()
     assert isinstance(skills, list)
     assert len(skills) > 0
@@ -72,7 +72,7 @@ def test_load_skills_from_yaml():
 
 
 def test_load_agents_from_yaml():
-    invalidate_cache()
+    load_agents.cache_clear()
     agents = load_agents()
     assert isinstance(agents, list)
     assert len(agents) > 0

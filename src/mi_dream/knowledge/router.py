@@ -14,6 +14,8 @@ class ExecutionContext:
     capabilities: list[str] = field(default_factory=list)
     previous_failures: list[dict] = field(default_factory=list)
     best_practices: list[dict] = field(default_factory=list)
+    recent_traces: list[dict] = field(default_factory=list)
+    episodes: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -24,6 +26,8 @@ class ExecutionContext:
             "capabilities": self.capabilities,
             "previous_failures": self.previous_failures,
             "best_practices": self.best_practices,
+            "recent_traces": self.recent_traces,
+            "episodes": self.episodes,
         }
 
     def to_json(self) -> str:

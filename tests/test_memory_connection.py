@@ -7,7 +7,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../src"))
 
 from unittest.mock import AsyncMock, patch
 
-from mi_dream.memory.connection import close_driver, get_driver
+from mi_dream.memory.connection import get_driver
 
 
 @pytest.mark.asyncio
@@ -22,14 +22,13 @@ async def test_get_driver_returns_singleton():
 
 
 @pytest.mark.asyncio
-async def test_close_driver_resets():
-    first = AsyncMock()
-    second = AsyncMock()
+async def test_get_driver_suppresses_unrecognized_notifications():
     with patch("mi_dream.memory.connection.AsyncGraphDatabase") as MockDriver:
-        MockDriver.driver.side_effect = [first, second]
-        assert get_driver() is first
-        await close_driver()
-        assert get_driver() is second
+        mock_driver = AsyncMock()
+        MockDriver.driver.return_value = mock_driver
+        get_driver()
+    kwargs = MockDriver.driver.call_args.kwargs
+    assert kwargs.get("notifications_disabled_classifications") == ["UNRECOGNIZED"]
 
 
 @pytest.mark.asyncio
@@ -50,6 +49,14 @@ async def test_bootstrap_schema_runs_cypher():
 
     # Should have called run at least once (for constraints/indexes)
     assert mock_session.run.call_count >= 1
+
+
+def test_schema_cypher_includes_daily_review_constraint():
+    from mi_dream.memory.bootstrap import _schema_cypher
+
+    cypher = _schema_cypher()
+    assert "DailyReview" in cypher
+    assert "(r.tenant_id, r.date) IS UNIQUE" in cypher
 
 
 @pytest.mark.asyncio

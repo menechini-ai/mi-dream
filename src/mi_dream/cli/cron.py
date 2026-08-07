@@ -85,7 +85,8 @@ class CronManager:
                 break
 
     def parse_chat(self, message: str) -> tuple[str, str, str | None] | None:
-        """Parse '/cron add 1h "busque sobre SRE"' or '/cron add 5m --no-agent --script check.sh'."""
+        """Parse '/cron add 1h "busque sobre SRE"' or '/cron add 5m --no-agent
+        --script check.sh'."""
         m = re.match(r"/cron\s+add\s+(\S+)\s+--no-agent\s+--script\s+(\S+)", message)
         if m:
             return m.group(1), "", m.group(2)

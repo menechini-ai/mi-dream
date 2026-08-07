@@ -5,6 +5,12 @@ import typer
 from mi_dream.cli.repl import REPL
 from mi_dream.cli.session import SessionManager
 from mi_dream.config import settings
+from mi_dream.learning.reviewer import (
+    daily_review_due,
+    reviewed_dates,
+    run_daily_review,
+)
+from mi_dream.learning.scheduler import run_learning_cycle
 
 app = typer.Typer(name="mi-dream", add_completion=False, no_args_is_help=True)
 
@@ -67,6 +73,54 @@ def distill():
 
     result = asyncio.run(_run())
     typer.echo(f"Distill: {result}")
+
+
+@app.command()
+def learn(
+    once: bool = typer.Option(False, "--once", help="Run a single cycle and exit"),
+    interval_minutes: int = typer.Option(
+        settings.refl_interval_minutes, "--interval-minutes", "-i"
+    ),
+):
+    """Run the automatic learning pipeline (reflect → distill → curator).
+
+    Daemon loop by default; use --once for a single cycle.
+    """
+
+    async def _run() -> None:
+        while True:
+            report = await run_learning_cycle()
+            typer.echo(f"Learn: {report}")
+            if once:
+                return
+            await asyncio.sleep(interval_minutes * 60)
+
+    asyncio.run(_run())
+
+
+@app.command()
+def review(
+    once: bool = typer.Option(False, "--once", help="Run a single daily review and exit"),
+):
+    """Run the daily review (stats + integrity + LLM summary).
+
+    Daemon loop by default; use --once for a single review.
+    """
+    from datetime import date, datetime
+
+    async def _run() -> None:
+        while True:
+            today = date.today().isoformat()
+            if once or daily_review_due(
+                datetime.now().hour, await reviewed_dates(), today
+            ):
+                report = await run_daily_review()
+                typer.echo(f"Daily review: {report}")
+            if once:
+                return
+            await asyncio.sleep(3600)
+
+    asyncio.run(_run())
 
 
 @app.command()

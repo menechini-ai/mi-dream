@@ -34,23 +34,6 @@ def render_commands(commands: list[dict]) -> None:
     console.print(table)
 
 
-def render_help() -> None:
-    console.print(
-        Panel.fit(
-            "[bold]mi-dream CLI[/bold]\n\n"
-            "[green]/skills[/green]        List available skills\n"
-            "[green]/agents[/green]        List available agents\n"
-            "[green]/commands[/green]      List all slash commands\n"
-            "[green]/help[/green]          Show this help\n"
-            "[green]/session <n>[/green]   Create or resume session\n"
-            "[green]/clear[/green]         Clear session context\n"
-            "[green]/exit[/green]          Exit the CLI",
-            title="Help",
-            border_style="blue",
-        )
-    )
-
-
 def render_message(role: str, content: str) -> None:
     if role == "user":
         console.print(Panel(content, title="You", border_style="green", title_align="left"))
@@ -88,7 +71,3 @@ def render_health(results: list) -> None:
             f"{r.latency_ms} ms",
         )
     console.print(table)
-
-
-def render_markdown(content: str) -> None:
-    console.print(Markdown(content))

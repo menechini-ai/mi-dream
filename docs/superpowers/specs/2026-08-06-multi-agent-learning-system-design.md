@@ -1,8 +1,10 @@
 # Software Design Document (SDD)
 ## Sistema Multi-Agente com Memória de Aprendizado Contínuo
 
-**Versão:** 2.2
+**Versão:** 2.4
 **Status:** Draft
+
+> **v2.4** — gatilhos de aprendizado por *contexto* (auto-learn a cada N traces + auto-compactação no threshold), fallback por tempo mantido, e **Daily Review** diário (stats + integridade + resumo LLM, `(:DailyReview {date})`). Continua tudo do v2.3 (Compaction/Episode, reflexão automática, recall de traces/episodes, correções de promoção, session resume).
 
 ---
 
@@ -98,7 +100,7 @@ Capability
 
 | Domínio | Tipo | Descrição | Implementação |
 |---|---|---|---|
-| Memory | Episode | Execução completa de uma tarefa | Nó (schema) — gravação Fase 2 |
+| Memory | Episode | Execução completa de uma tarefa (conversa compactada/resumo) | Fase 1 ✓ (Compactor, v2.3) |
 | Memory | ReasoningTrace | Cadeia imutável de raciocínio produzida durante a execução | Fase 1 ✓ |
 | Semantic Memory | Entity | Entidades semânticas (POLE+O) | Fase 2 |
 | Knowledge | Lesson | Aprendizado derivado de um ou mais traces. **Nó de primeira classe desde a Fase 1** | Fase 1 ✓ (scheduler) |
@@ -110,6 +112,7 @@ Capability
 | Governance | Validation | Resultado de revalidação de Strategy | Fase 3 |
 | Governance | Supersession | Histórico de substituição entre Strategies (relação `SUPERSEDES`) | Fase 2 |
 | Governance | Metrics | Métricas de suporte/uso por Strategy (`support_count`, `success_rate`) | Fase 1 ✓ (propriedades) |
+| Operations | DailyReview | Relatório diário idempotente por data (`date`, `report`, `created_at`) | Fase 1 ✓ (Reviewer, v2.4) |
 
 > `PromptVersion`, `Evaluation` e `Experiment` **ficam fora do grafo**, na camada de observability (Langfuse/OTel, ver §17) — não são tipos de nó do metamodelo, pois poluem o grafo com metadados de engenharia.
 
@@ -127,7 +130,7 @@ Capability
 | `COMPOSES` | Workflow | Strategy | Fase 2 |
 | `IMPLEMENTS` | Workflow | Capability | Fase 3 |
 | `APPLIES_TO` | Strategy | Capability | Fase 3 |
-| `GENERATED` | Episode | Lesson | Fase 2 |
+| `GENERATED` | Episode | Lesson | Fase 2 — Compactor também grava um `ReasoningTrace` derivado do resumo (v2.3), permitindo que o Episode entre no pipeline via `DERIVED_FROM` |
 | `DETECTED_FROM` | FailurePattern | Lesson | Fase 2 |
 
 **Decisão de direção (SUPPORTED_BY):** `(l:Lesson)-[:SUPPORTED_BY]->(s:Strategy)` — "lesson suporta strategy". Integrity checks e dedup do Curator usam `(s)<-[:SUPPORTED_BY]-(:Lesson)` (entrada). Unificada na direção do código.
@@ -224,6 +227,8 @@ DeepAgents Supervisor/Planner
 - `capabilities` — capacidades disponíveis
 - `previous_failures` — FailurePatterns relevantes
 - `best_practices` — BestPractices aplicáveis
+- `recent_traces` — últimas `ReasoningTrace`s do tenant (memória crua de conversa recente, v2.3)
+- `episodes` — resumos de conversas anteriores (`Episode`, memória episódica compactada, v2.3)
 
 Esse contrato facilita trocar o Router sem alterar os agentes.
 
@@ -427,6 +432,8 @@ Phase 1
   - Knowledge Distiller básico (Lesson → Strategy EXPERIMENTAL + SUPPORTED_BY)
   - Curator (dedup + máquina de estados básica + integridade estrutural)
   - Lesson como nó de primeira classe (já implementado — scheduler cria `(l:Lesson)` + `DERIVED_FROM`)
+  - v2.3: Episode (compaction de conversa) + reflexão automática + recall de traces/episodes
+  - v2.4: gatilhos por contexto (traces + auto-compact) + Daily Review (`DailyReview`)
 
 Phase 2
   - Reflector (separado de Reflection)
@@ -469,6 +476,11 @@ Phase 3
 - **Distiller determinístico na Fase 1** — a decisão CREATE/REINFORCE/REFINE/CONTRADICT já é tomada pelo Reflector; o Distiller materializa a Strategy (EXPERIMENTAL) e cria `SUPPORTED_BY` (KM-002). REINFORCE/REFINE incrementam `support_count` da Strategy correspondente (match por título normalizado) ou criam uma nova. Authoring via LLM é Phase 2.
 - **SUPERSEDED → ARCHIVED**: Strategy superseded precisa existir para auditoria. Ela só deixa de ser a estratégia de execução, não deixa de existir.
 - **Execution Context como objeto de runtime**, não do grafo — pertence à interface da camada de agentes, não ao metamodelo do Knowledge Graph.
+- **`Episode` como memória episódica compactada (v2.3)** — o nó já existia no schema com índice vetorial (`episode_embedding`) sem uso; a compactação de conversa é o primeiro consumidor. O resumo vira `Episode` (durável, recall entre sessões) **e** um `ReasoningTrace` derivado (entra no pipeline), fechando o ciclo episódico → conhecimento.
+- **Compactação por threshold de caracteres, não por contagem de mensagens (v2.3)** — `COMPACT_THRESHOLD_CHARS` (8000) é simples e determinístico; calibração por tokens fica como ajuste fino futuro.
+- **Reflexão automática em background, com falha silenciosa (v2.3)** — `run_learning_cycle` isola cada etapa em `try/except`; o ciclo nunca bloqueia o chat (alinhado a §13 Availability). Intervalo via `REFLECTION_INTERVAL_MINUTES` no REPL e `REFLECTION_CRON` no daemon `mi-dream learn`.
+- **Bônus `+0.1` para `outcome=="success"` no Evaluator (v2.3)** — conversas curtas de sucesso (fatos, nomes, preferências) passam a atingir o threshold do Reflector; traces longos/falhas seguem pontuando mais alto.
+- **Seeding de métricas no Distiller (v2.3)** — `success_rate` nunca era escrito (ficava 0.0), tornando INV-002/KM-008 inalcançável. `_create`/`_reinforce` agora registram o primeiro reforço (`support_count=1, success_rate=1.0`); o portão de promoção é preservado.
 
 ---
 
@@ -502,5 +514,132 @@ Phase 3
 | Poisoning via traces maliciosos | Human approval para ACTIVE | Fase 1 |
 | Exfiltration via ReasoningTrace | Sanitização PII | Fase 1 |
 | Graph corruption (cypher injection) | Parameterized queries only | Fase 1 |
+
+---
+
+## 19. Conversation Compaction & Episodic Memory (v2.3)
+
+### 19.1 Objetivo
+
+Conversas longas crescem sem limite no contexto do LLM (custos + degradação de qualidade). A compactação condensa os turnos antigos em um **resumo episódico**, mantendo o contexto limpo sem perder fatos-chave. O resumo é persistido como nó `Episode` no grafo e reutilizado no recall de sessões futuras.
+
+```
+context longa
+   │  > COMPACT_THRESHOLD_CHARS (default 8000)
+   ▼
+Compactor.summarize(messages)  ── LLM condensa, preservando fatos-chave
+   │
+   ├─▶ [{"role":"system","content":"[Resumo] ..."}, *recent]   (context limpo)
+   │
+   └─▶ persist_episode()
+        ├─▶ (:Episode {id, summary, session_id, tenant_id, created_at, embedding})
+        └─▶ cria ReasoningTrace derivado do resumo  →  entra no Learning Pipeline
+```
+
+### 19.2 Componentes
+
+| Componente | Responsabilidade | Implementação |
+|---|---|---|
+| `ConversationCompactor` | `summarize()` (LLM via `ask_llm_full`) + `compact()` (threshold + keep_recent) | `learning/compactor.py` (novo) |
+| `EpisodeRepository` | CRUD Cypher de `Episode` + embedding (`episode_embedding`, 1536-d cosine — já no schema) | `knowledge/repository.py` ou módulo próprio |
+| REPL | auto-compactação no loop + `/compact` manual; persiste Episode (fire-and-forget) | `cli/repl.py`, `cli/commands.py` |
+| Recall | `ExecutionContext.episodes` populado por recência (fallback vetorial) | `knowledge/router.py`, `cli/repl.py` |
+
+### 19.3 Regras
+
+- **Trigger:** contexto excede `COMPACT_THRESHOLD_CHARS` (auto) ou `/compact` (manual).
+- **Preservação:** o prompt de sumarização instrui a reter nomes, preferências, decisões, snippets e fatos objetivos; condensar o resto.
+- **`COMPACT_KEEP_RECENT`** (default 8): turnos recentes mantidos verbatim após o resumo.
+- **Idempotência de recall:** Episodes recentes são injetados no system prompt junto com `recent_traces` e strategies ACTIVE.
+- **PII:** o resumo passa por `sanitize()` antes de persistir (mesma política de `ReasoningTrace`, §18.2).
+
+---
+
+## 20. Reflexão Automática (v2.3)
+
+### 20.1 Objetivo
+
+O Learning Pipeline (trace → lesson → strategy → governança) deixa de depender de execução manual (`reflect`/`distill`/`curator`) e roda sozinho: em background dentro do chat e/ou como daemon standalone.
+
+### 20.2 Modos de execução
+
+| Modo | Disparo | Quando |
+|---|---|---|
+| Background REPL | `asyncio.create_task(_auto_learn())` | a cada `REFLECTION_INTERVAL_MINUTES` (default 10) + no `/exit` |
+| Por contexto (v2.4) | pós-turno no REPL | (a) `_traces_since_learn >= LEARN_TRACE_THRESHOLD`; (b) contexto >= `COMPACT_THRESHOLD_CHARS` (auto-compact + Episode + ciclo) |
+| Daemon | `uv run mi-dream learn` | loop infinito, intervalo via `-i/--interval-minutes` (default 10 min); `--once` para ciclo único |
+| Manual | `/learn` (REPL) | sob demanda |
+
+> O disparo **por contexto** (v2.4) é o gatilho primário; o intervalo por tempo permanece como rede de segurança (fallback) quando o processo fica ocioso.
+
+### 20.3 Ciclo (`run_learning_cycle`)
+
+```
+ReflectionScheduler.run_cycle()     traces → Lessons (DERIVED_FROM)
+        │
+KnowledgeDistiller.distill(...)     Lessons → Strategy EXPERIMENTAL + SUPPORTED_BY + embedding
+        │
+Curator                             integridade → state machine → dedup → EXPERIMENTAL→ACTIVE
+```
+
+Cada etapa é isolada com `try/except`: a falha do pipeline **nunca** bloqueia a execução (degradação graciosa, §13 Availability).
+
+### 20.4 Correções de promoção (v2.3)
+
+- **Evaluator:** traces curtos com `outcome="success"` recebem `+0.1` (bônus) → atingem o threshold 0.5 do Reflector. Conversas curtas de fato (ex.: "meu nome é X") agora viram Lesson.
+- **Distiller:** `_create` e `_reinforce` semeiam `support_count`/`success_rate` (`update_metrics(id, 1, 1.0)`) — sem isso `success_rate` nunca saía de 0.0 e o portão KM-008/INV-002 (`support_count ≥ 3, success_rate ≥ 0.6`) era inalcançável.
+- **KM-008** permanece o portão de promoção; agora é atingível por reforços acumulados.
+
+### 20.5 Auto-compactação por contexto (v2.4)
+
+No REPL, após cada troca de mensagens, se `sum(len(content)) do contexto >= COMPACT_THRESHOLD_CHARS`, o `ConversationCompactor` roda automaticamente: condensa → substitui o contexto pela versão compactada → persiste `(:Episode)` → dispara `run_learning_cycle()` (o resumo vira `ReasoningTrace` derivado e entra no pipeline).
+
+---
+
+## 21. Configuração nova (v2.3)
+
+| Variável | Default | Uso |
+|---|---|---|
+| `REFLECTION_INTERVAL_MINUTES` | `10` | intervalo do ciclo automático no REPL (fallback) |
+| `COMPACT_THRESHOLD_CHARS` | `8000` | tamanho que dispara a compactação (auto ou `/compact`) |
+| `COMPACT_KEEP_RECENT` | `8` | turnos mantidos verbatim após compactar |
+| `LEARN_TRACE_THRESHOLD` | `10` | nº de traces desde o último ciclo que dispara auto-learn (v2.4) |
+| `DAILY_REVIEW_HOUR` | `8` | hora (0-23) do Daily Review diário (v2.4) |
+
+---
+
+## 22. Daily Review (v2.4)
+
+### 22.1 Objetivo
+
+Revisão diária automatizada ("daily") do que foi aprendido e produzido no dia: verifica se o pipeline processou corretamente (sem traces órfãos/pendentes), se a integridade do grafo se mantém e se há conhecimento estagnado que merece atenção.
+
+### 22.2 Componentes
+
+- `DailyReviewer(session, use_llm=True)` — coleta stats + integridade + resumo LLM + persistência.
+- `run_daily_review(tenant_id=None)` — função módulo que abre driver e executa a revisão.
+- `reviewed_dates(tenant_id) -> set[str]` — datas já revisadas no grafo (`(:DailyReview {date})`).
+- `daily_review_due(now_hour, reviewed_dates, today) -> bool` — função pura do scheduler.
+
+### 22.3 Conteúdo do relatório
+
+| Bloco | Descrição |
+|---|---|
+| `stats` | traces/episodes/lessons de hoje; strategies por estado; promovidas hoje; total |
+| `health` | traces não processados (sem `DERIVED_FROM`), lessons pendentes (sem `SUPPORTED_BY`), candidatos a promoção (`support_count ≥ 3 AND success_rate ≥ 0.6`) |
+| `integrity_violations` | saída de `Curator.run_integrity_checks` (KM-*, INV-001) |
+| `summary` | parágrafo narrativo gerado via LLM (opcional, `use_llm`) |
+
+### 22.4 Persistência e schedule
+
+- `MERGE (:DailyReview {date, tenant_id}) SET report, created_at` — idempotente por dia.
+- **Hora fixa + catch-up:** se `now.hour >= DAILY_REVIEW_HOUR` e a data atual ainda não tem `DailyReview` no grafo, a revisão roda ao iniciar o REPL/daemon; depois o scheduler checa a cada 60 min. Isso cobre o caso de o processo não estar aberto exatamente às 08:00.
+
+### 22.5 Interfaces
+
+| Comando | Onde | Efeito |
+|---|---|---|
+| `/review` | REPL | roda `run_daily_review` imediatamente |
+| `uv run mi-dream review [--once]` | CLI | revisão imediata; daemon diário sem `--once` |
 
 ---

@@ -19,4 +19,6 @@ class Evaluator:
             score += 0.4
         if has_failure:
             score += 0.3
+        if trace.get("outcome") == "success":
+            score += 0.1
         return min(score, 1.0)

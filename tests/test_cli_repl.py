@@ -41,6 +41,23 @@ def test_build_system_prompt_includes_strategies():
     assert "Check pods first" in prompt
 
 
+def test_build_system_prompt_includes_recent_traces():
+    ctx = ExecutionContext(
+        goal="x",
+        recent_traces=[{"content": "Q: meu nome é Adilson\nA: Prazer, Adilson"}],
+    )
+    prompt = build_system_prompt(ctx)
+    assert "Recent conversation history" in prompt
+    assert "Adilson" in prompt
+
+
+def test_build_system_prompt_includes_episodes():
+    ctx = ExecutionContext(goal="x", episodes=[{"summary": "Usuário se chama Adilson"}])
+    prompt = build_system_prompt(ctx)
+    assert "Prior session summaries" in prompt
+    assert "Adilson" in prompt
+
+
 async def test_recall_context_degrades_gracefully():
     with patch("mi_dream.cli.repl.get_driver", side_effect=RuntimeError("neo4j down")):
         ctx = await recall_context("any goal")
@@ -143,3 +160,208 @@ async def test_repl_creates_random_session_on_start(tmp_path):
     assert session.name != "default"
     assert "-" in session.name
     assert (tmp_path / f"{session.name}.json").exists()  # salva com o ID aleatório
+
+
+@pytest.mark.asyncio
+async def test_repl_preserves_resumed_session(tmp_path):
+    from unittest.mock import MagicMock
+
+    from mi_dream.cli.repl import REPL
+
+    async def fake_prompt(*args, **kwargs):
+        raise SystemExit
+
+    with patch("mi_dream.cli.repl.PromptSession") as MockPS:
+        MockPS.return_value = MagicMock()
+        MockPS.return_value.prompt_async = fake_prompt
+        mgr = SessionManager(session_dir=tmp_path)
+        mgr.resume("mysess")
+        mgr.add_message("user", "oi")
+        await REPL(mgr).run()
+
+    assert mgr.current().name == "mysess"
+    assert (tmp_path / "mysess.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_repl_session_command_resumes(tmp_path):
+
+    from mi_dream.cli.repl import REPL
+
+    mgr = SessionManager(session_dir=tmp_path)
+    repl = REPL(mgr)
+    with patch("mi_dream.cli.repl.console"):
+        await repl._handle_session_command("mysess")
+    assert mgr.current().name == "mysess"
+
+
+@pytest.mark.asyncio
+async def test_repl_clear_command_clears_context(tmp_path):
+    from unittest.mock import MagicMock
+
+    from mi_dream.cli.repl import REPL
+
+    inputs = iter(["/clear"])
+
+    async def fake_prompt(*args, **kwargs):
+        try:
+            return next(inputs)
+        except StopIteration:
+            raise SystemExit
+
+    with patch("mi_dream.cli.repl.PromptSession") as MockPS, patch(
+        "mi_dream.cli.repl.console"
+    ):
+        MockPS.return_value = MagicMock()
+        MockPS.return_value.prompt_async = fake_prompt
+        mgr = SessionManager(session_dir=tmp_path)
+        mgr.resume("s1")
+        mgr.add_message("user", "hello")
+        mgr.add_message("assistant", "world")
+        await REPL(mgr).run()
+
+    assert mgr.current().context == []
+
+
+@pytest.mark.asyncio
+async def test_repl_compact_command_compacts_and_persists(tmp_path):
+    from unittest.mock import AsyncMock, MagicMock
+
+    from mi_dream.cli.repl import REPL
+
+    mgr = SessionManager(session_dir=tmp_path)
+    mgr.create("s1")
+    for msg in ("a" * 100, "b" * 100, "c" * 100):
+        mgr.add_message("user", msg)
+    repl = REPL(mgr)
+
+    fake = MagicMock()
+    fake.compact = AsyncMock(
+        return_value=[
+            {"role": "system", "content": "[Resumo] ABC"},
+            {"role": "user", "content": "c" * 100},
+        ]
+    )
+    fake.persist_episode = AsyncMock(return_value="ep-1")
+
+    with patch("mi_dream.cli.repl.ConversationCompactor", return_value=fake), \
+         patch("mi_dream.cli.repl.console"):
+        await repl._handle_compact()
+
+    fake.compact.assert_awaited_once()
+    fake.persist_episode.assert_awaited_once()
+    assert mgr.current().context[0]["role"] == "system"
+
+
+@pytest.mark.asyncio
+async def test_repl_learn_command_runs_cycle(tmp_path):
+    from unittest.mock import AsyncMock
+
+    from mi_dream.cli.repl import REPL
+
+    mgr = SessionManager(session_dir=tmp_path)
+    repl = REPL(mgr)
+
+    with patch(
+        "mi_dream.cli.repl.run_learning_cycle", new=AsyncMock(return_value={})
+    ) as mock_cycle, patch("mi_dream.cli.repl.console"):
+        await repl._handle_learn()
+
+    mock_cycle.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_repl_auto_learn_after_trace_threshold(tmp_path):
+    from unittest.mock import AsyncMock, patch
+
+    from mi_dream.cli.repl import REPL
+    from mi_dream.config import settings
+
+    mgr = SessionManager(session_dir=tmp_path)
+    repl = REPL(mgr)
+
+    with patch.object(settings, "learn_trace_threshold", 2), patch(
+        "mi_dream.cli.repl.run_learning_cycle", new=AsyncMock(return_value={})
+    ) as mock_cycle:
+        repl._traces_since_learn = 1
+        await repl._maybe_auto_learn()
+        mock_cycle.assert_not_awaited()
+
+        repl._traces_since_learn = 2
+        await repl._maybe_auto_learn()
+        mock_cycle.assert_awaited_once()
+        assert repl._traces_since_learn == 0
+
+
+@pytest.mark.asyncio
+async def test_repl_auto_compact_on_context_threshold(tmp_path):
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from mi_dream.cli.repl import REPL
+    from mi_dream.config import settings
+
+    mgr = SessionManager(session_dir=tmp_path)
+    mgr.create("s1")
+    for msg in ("a" * 100, "b" * 100, "c" * 100, "d" * 100):
+        mgr.add_message("user", msg)
+    repl = REPL(mgr)
+
+    fake = MagicMock()
+    fake.compact = AsyncMock(
+        return_value=[
+            {"role": "system", "content": "[Resumo] ABC"},
+            {"role": "user", "content": "d" * 100},
+        ]
+    )
+    fake.persist_episode = AsyncMock(return_value="ep-1")
+
+    with patch.object(settings, "compact_threshold_chars", 250), \
+         patch("mi_dream.cli.repl.ConversationCompactor", return_value=fake), \
+         patch(
+             "mi_dream.cli.repl.run_learning_cycle",
+             new=AsyncMock(return_value={}),
+         ) as mock_cycle:
+        await repl._maybe_auto_compact()
+
+    fake.compact.assert_awaited_once()
+    fake.persist_episode.assert_awaited_once()
+    mock_cycle.assert_awaited_once()
+    assert mgr.current().context[0]["role"] == "system"
+
+
+@pytest.mark.asyncio
+async def test_repl_auto_compact_no_op_below_threshold(tmp_path):
+    from unittest.mock import AsyncMock, patch
+
+    from mi_dream.cli.repl import REPL
+    from mi_dream.config import settings
+
+    mgr = SessionManager(session_dir=tmp_path)
+    mgr.add_message("user", "oi")
+    repl = REPL(mgr)
+
+    with patch.object(settings, "compact_threshold_chars", 250), \
+         patch("mi_dream.cli.repl.ConversationCompactor") as MockCompactor, \
+         patch("mi_dream.cli.repl.run_learning_cycle", new=AsyncMock()) as mock_cycle:
+        await repl._maybe_auto_compact()
+
+    MockCompactor.assert_not_called()
+    mock_cycle.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_repl_review_command_runs_daily_review(tmp_path):
+    from unittest.mock import AsyncMock
+
+    from mi_dream.cli.repl import REPL
+
+    mgr = SessionManager(session_dir=tmp_path)
+    repl = REPL(mgr)
+
+    with patch(
+        "mi_dream.cli.repl.run_daily_review", new=AsyncMock(return_value={"date": "2026-08-07"})
+    ) as mock_review, patch("mi_dream.cli.repl.console"):
+        await repl._handle_review()
+
+    mock_review.assert_awaited_once()
+    assert "2026-08-07" in repl._reviewed_dates

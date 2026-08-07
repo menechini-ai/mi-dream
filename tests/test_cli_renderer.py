@@ -8,7 +8,6 @@ from mi_dream.cli.renderer import (
     render_agents,
     render_commands,
     render_error,
-    render_help,
     render_message,
     render_skills,
     render_status,
@@ -30,12 +29,6 @@ def test_render_agents_prints_table():
 def test_render_commands_prints_table():
     with patch("mi_dream.cli.renderer.console") as mock_console:
         render_commands([{"name": "skills", "desc": "List skills"}])
-        assert mock_console.print.called
-
-
-def test_render_help_prints_panel():
-    with patch("mi_dream.cli.renderer.console") as mock_console:
-        render_help()
         assert mock_console.print.called
 
 

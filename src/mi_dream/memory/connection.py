@@ -11,12 +11,6 @@ def get_driver() -> AsyncGraphDatabase:
         _driver = AsyncGraphDatabase.driver(
             settings.neo4j_uri,
             auth=(settings.neo4j_user, settings.neo4j_password),
+            notifications_disabled_classifications=["UNRECOGNIZED"],
         )
     return _driver
-
-
-async def close_driver() -> None:
-    global _driver
-    if _driver:
-        await _driver.close()
-        _driver = None

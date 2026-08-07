@@ -69,6 +69,14 @@ def _handle_cost(args: str) -> str:
     return "Use /cost in REPL for session cost estimate."
 
 
+def _handle_learn(args: str) -> str:
+    return "Run /learn in REPL (or `mi-dream learn`) for a learning cycle."
+
+
+def _handle_review(args: str) -> str:
+    return "Run /review in REPL (or `mi-dream review`) for the daily review."
+
+
 def _handle_cron(args: str) -> str:
     """Manage cron jobs: /cron [list | rm <id>]"""
     from mi_dream.cli.cron import CronManager
@@ -82,7 +90,10 @@ def _handle_cron(args: str) -> str:
         lines = ["Active cron jobs:", ""]
         for j in jobs:
             mode = f"script={j.script}" if j.script else "agent"
-            lines.append(f"  [{j.id}] {j.prompt[:40] or j.script}... — every {j.interval} ({mode}) (last: {j.last_run or 'never'})")
+            lines.append(
+                f"  [{j.id}] {j.prompt[:40] or j.script}... — every {j.interval} "
+                f"({mode}) (last: {j.last_run or 'never'})"
+            )
         return "\n".join(lines)
     if parts[0] == "rm" and len(parts) > 1:
         if mgr.deactivate(parts[1].strip()):
@@ -102,6 +113,8 @@ COMMANDS: dict[str, SlashCommand] = {
     "cron": SlashCommand("cron", "Manage learning cron jobs", _handle_cron),
     "model": SlashCommand("model", "Show current model", _handle_model),
     "cost": SlashCommand("cost", "Session cost estimate", _handle_cost),
+    "learn": SlashCommand("learn", "Run a learning cycle", _handle_learn),
+    "review": SlashCommand("review", "Run the daily review", _handle_review),
 }
 
 

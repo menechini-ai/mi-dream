@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../src"))
 
+from conftest import FakeAsyncIter
 from typer.testing import CliRunner
 
 from mi_dream.cli.app import app
@@ -67,6 +68,8 @@ def test_help():
     assert "reflect" in result.stdout
     assert "distill" in result.stdout
     assert "curator" in result.stdout
+    assert "learn" in result.stdout
+    assert "review" in result.stdout
 
 
 def test_init_bootstraps_schema():
@@ -142,17 +145,31 @@ def test_curator_reports():
     assert "State machine" in result.stdout
 
 
-class FakeAsyncIter:
-    def __init__(self, items):
-        self._items = items
-        self._i = 0
+def test_learn_runs_cycle_once():
+    from unittest.mock import AsyncMock
 
-    def __aiter__(self):
-        return self
+    with patch(
+        "mi_dream.cli.app.run_learning_cycle",
+        new=AsyncMock(return_value={"reflection": {}, "distill": {}, "curator": {}}),
+    ) as mock_cycle:
+        result = runner.invoke(app, ["learn", "--once"])
 
-    async def __anext__(self):
-        if self._i >= len(self._items):
-            raise StopAsyncIteration
-        item = self._items[self._i]
-        self._i += 1
-        return item
+    assert result.exit_code == 0
+    assert "Learn:" in result.stdout
+    mock_cycle.assert_awaited_once()
+
+
+def test_review_runs_once():
+    from unittest.mock import AsyncMock
+
+    with patch(
+        "mi_dream.cli.app.run_daily_review",
+        new=AsyncMock(return_value={"date": "2026-08-07", "health": {"ok": True}}),
+    ) as mock_review:
+        result = runner.invoke(app, ["review", "--once"])
+
+    assert result.exit_code == 0
+    assert "Daily review" in result.stdout
+    mock_review.assert_awaited_once()
+
+

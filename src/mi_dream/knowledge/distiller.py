@@ -63,6 +63,7 @@ class KnowledgeDistiller:
         if self._embedder is not None:
             await self._embed(strategy, lesson)
         await self._repo.add_supported_by(strategy.id, lesson.id)
+        await self._repo.update_metrics(strategy.id, 1, 1.0)
         return strategy
 
     async def _embed(self, strategy: Strategy, lesson: Lesson) -> None:
@@ -81,7 +82,7 @@ class KnowledgeDistiller:
         target = self._match(lesson, existing)
         if target is None:
             return await self._create(lesson, tenant_id)
-        await self._repo.update_metrics(target.id, 1, target.success_rate)
+        await self._repo.update_metrics(target.id, 1, 1.0)
         await self._repo.add_supported_by(target.id, lesson.id)
         return target
 

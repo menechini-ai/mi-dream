@@ -33,7 +33,12 @@ class LLMResponse:
     latency_ms: float = 0.0
 
 
-def ask_llm_full(system: str, user_message: str, max_tokens: int = 1024, history: list[dict] | None = None) -> LLMResponse:
+def ask_llm_full(
+    system: str,
+    user_message: str,
+    max_tokens: int = 1024,
+    history: list[dict] | None = None,
+) -> LLMResponse:
     """Send a chat message and return content + token usage + latency.
 
     ``history`` is optional prior turns (list of {role, content}). When provided,
@@ -51,6 +56,7 @@ def ask_llm_full(system: str, user_message: str, max_tokens: int = 1024, history
     response = client.chat.completions.create(
         model=settings.llm_model,
         max_tokens=max_tokens,
+        temperature=settings.llm_temperature,
         messages=messages,
     )
     latency_ms = (time.monotonic() - start) * 1000
@@ -70,8 +76,3 @@ def ask_llm_full(system: str, user_message: str, max_tokens: int = 1024, history
 def ask_llm(system: str, user_message: str, max_tokens: int = 1024) -> str:
     """Send a chat message and return the response text (runs in executor)."""
     return ask_llm_full(system, user_message, max_tokens).content
-
-
-def chat(system: str, user_message: str, max_tokens: int = 1024) -> str:
-    """Alias for `ask_llm` — OpenAI-compatible chat helper."""
-    return ask_llm(system=system, user_message=user_message, max_tokens=max_tokens)

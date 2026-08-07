@@ -23,6 +23,13 @@ def test_evaluator_scores_low_for_brief_trace():
     assert scored[0]["reflection_score"] < 0.5
 
 
+def test_evaluator_short_success_reaches_threshold():
+    e = Evaluator()
+    trace = {"content": "Q: meu nome é adilson\nA: Prazer, Adilson", "outcome": "success"}
+    scored = e.evaluate([trace])
+    assert scored[0]["reflection_score"] >= 0.5
+
+
 async def test_reflector_filters_below_threshold():
     r = Reflector()
     traces = [{"id": "t1", "content": "short", "outcome": "unknown", "reflection_score": 0.3}]

@@ -2,13 +2,10 @@ import os
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
-from unittest.mock import MagicMock, patch
-
-import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../src"))
 
-from mi_dream.cli.cron import CronManager, CronJob
+from mi_dream.cli.cron import CronManager
 
 
 def _fresh_manager(tmp_path: Path) -> CronManager:

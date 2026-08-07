@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import datetime
 from enum import StrEnum
 
 from pydantic import BaseModel, Field, field_validator
@@ -72,7 +72,3 @@ class Lesson(BaseModel):
     source_trace_ids: list[str]
     confidence: float = Field(ge=0.0, le=1.0)
     tenant_id: str = "default"
-
-
-def now_utc() -> datetime:
-    return datetime.now(UTC)

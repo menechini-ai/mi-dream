@@ -20,11 +20,3 @@ def sanitize(text: str) -> str:
         if isinstance(pattern, re.Pattern):
             text = pattern.sub(REDACTION, text)
     return text
-
-
-def contains_pii(text: str) -> bool:
-    for name, pattern in PATTERNS.__dict__.items():
-        if isinstance(pattern, re.Pattern):
-            if pattern.search(text):
-                return True
-    return False

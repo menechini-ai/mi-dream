@@ -67,3 +67,17 @@ def test_ask_llm_full_empty_content_placeholder():
             resp = ask_llm_full("system", "user")
 
     assert resp.content == "[empty response from provider]"
+
+
+def test_ask_llm_full_sends_temperature():
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.return_value = _mock_response("hello", None)
+
+    with patch("mi_dream.llm.client.get_client", return_value=mock_client):
+        with patch("mi_dream.llm.client.settings.llm_api_key", "sk-test"), patch(
+            "mi_dream.llm.client.settings.llm_temperature", 0.2
+        ):
+            ask_llm_full("system", "user")
+
+    kwargs = mock_client.chat.completions.create.call_args.kwargs
+    assert kwargs["temperature"] == 0.2

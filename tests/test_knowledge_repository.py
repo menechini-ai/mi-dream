@@ -1,11 +1,12 @@
 import os
 import sys
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../src"))
 
 import pytest
+from conftest import FakeAsyncIter
 
 from mi_dream.knowledge.models import Strategy, StrategyState
 from mi_dream.knowledge.repository import StrategyRepository
@@ -102,3 +103,15 @@ async def test_set_embedding_sets_vector():
     query = session.run.call_args.args[0]
     assert "s.embedding = $embedding" in query
     assert session.run.call_args.kwargs["embedding"] == [0.1, 0.2, 0.3]
+
+
+@pytest.mark.asyncio
+async def test_list_by_domain_filters_tenant():
+    session = AsyncMock()
+    strategies = [make_strategy(domain="kubernetes"), make_strategy(domain="kubernetes")]
+    items = [{"s": s.model_dump(mode="json")} for s in strategies]
+
+    session.run.return_value = MagicMock(__aiter__=lambda self: FakeAsyncIter(items))
+    repo = StrategyRepository(session)
+    result = await repo.list_by_domain("kubernetes", "default")
+    assert len(result) == 2

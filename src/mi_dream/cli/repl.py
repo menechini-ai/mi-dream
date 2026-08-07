@@ -1,4 +1,5 @@
 import asyncio
+from datetime import date, datetime
 from pathlib import Path
 from uuid import uuid4
 
@@ -28,6 +29,11 @@ from mi_dream.knowledge.repository import StrategyRepository
 from mi_dream.knowledge.router import ExecutionContext, StrategyRouter
 from mi_dream.knowledge.vector import StrategyVectorRetriever
 from mi_dream.learning.compactor import ConversationCompactor
+from mi_dream.learning.reviewer import (
+    daily_review_due,
+    reviewed_dates,
+    run_daily_review,
+)
 from mi_dream.learning.scheduler import run_learning_cycle
 from mi_dream.llm.client import ask_llm_full
 from mi_dream.memory.connection import get_driver
@@ -119,6 +125,8 @@ class REPL:
         self._completer = SlashCompleter()
         self._running = True
         self._bindings = KeyBindings()
+        self._traces_since_learn = 0
+        self._reviewed_dates: set[str] = set()
         self._setup_bindings()
 
     def _setup_bindings(self) -> None:
@@ -130,11 +138,10 @@ class REPL:
                 self._running = False
                 event.app.exit()
 
-    async def _run_with_skill(self, skill: dict, user_input: str) -> None:
-        system_prompt = skill["prompt"]
+    async def _run_prompt(self, label: str, name: str, system_prompt: str, user_input: str) -> None:
         self._session_mgr.add_message("user", user_input)
 
-        with console.status(f"[bold cyan]Skill: {skill['name']}...", spinner="dots"):
+        with console.status(f"[bold cyan]{label}: {name}...", spinner="dots"):
             resp = await asyncio.get_event_loop().run_in_executor(
                 None,
                 lambda: ask_llm_full(
@@ -151,28 +158,12 @@ class REPL:
         self._session_mgr.add_message("assistant", assistant_msg)
         render_message("assistant", assistant_msg)
         render_status(settings.llm_model, resp.total_tokens, format_latency(resp.latency_ms))
+
+    async def _run_with_skill(self, skill: dict, user_input: str) -> None:
+        await self._run_prompt("Skill", skill["name"], skill["prompt"], user_input)
 
     async def _run_with_agent(self, agent: dict, user_input: str) -> None:
-        system_prompt = agent["prompt"]
-        self._session_mgr.add_message("user", user_input)
-
-        with console.status(f"[bold cyan]Agent: {agent['name']}...", spinner="dots"):
-            resp = await asyncio.get_event_loop().run_in_executor(
-                None,
-                lambda: ask_llm_full(
-                    system=system_prompt,
-                    user_message=user_input,
-                    max_tokens=settings.llm_max_tokens,
-                    history=[
-                        {"role": m["role"], "content": m["content"]}
-                        for m in self._session_mgr.current().context
-                    ],
-                ),
-            )
-        assistant_msg = resp.content
-        self._session_mgr.add_message("assistant", assistant_msg)
-        render_message("assistant", assistant_msg)
-        render_status(settings.llm_model, resp.total_tokens, format_latency(resp.latency_ms))
+        await self._run_prompt("Agent", agent["name"], agent["prompt"], user_input)
 
     async def _handle_session_command(self, args: str) -> None:
         name = args.strip() or "default"
@@ -201,6 +192,56 @@ class REPL:
         with console.status("[bold cyan]Learning cycle...", spinner="dots"):
             report = await run_learning_cycle()
         console.print(f"[green]Learn: {report}[/green]")
+
+    async def _run_learning_cycle_safe(self) -> None:
+        try:
+            await run_learning_cycle()
+        except Exception:
+            pass
+
+    async def _maybe_auto_learn(self) -> None:
+        """Disparo por contexto (SDD §20.2): aprende a cada N traces."""
+        if self._traces_since_learn >= settings.learn_trace_threshold:
+            self._traces_since_learn = 0
+            await self._run_learning_cycle_safe()
+
+    async def _maybe_auto_compact(self) -> None:
+        """Auto-compactação (SDD §20.5): contexto >= threshold → compacta e aprende."""
+        sess = self._session_mgr.current()
+        size = sum(len(m.get("content", "")) for m in sess.context)
+        if size < settings.compact_threshold_chars:
+            return
+        compactor = ConversationCompactor()
+        compacted = await compactor.compact(sess.context)
+        if compacted == sess.context:
+            return
+        summary = compacted[0]["content"]
+        sess.context = compacted
+        try:
+            await compactor.persist_episode(summary, sess.name)
+        except Exception:
+            pass
+        self._traces_since_learn = 0
+        await self._run_learning_cycle_safe()
+
+    async def _handle_review(self) -> None:
+        with console.status("[bold cyan]Daily review...", spinner="dots"):
+            report = await run_daily_review()
+        console.print(f"[green]Daily review:[/green] {report}")
+        self._reviewed_dates.add(date.today().isoformat())
+
+    async def _daily_review(self) -> None:
+        """Hora fixa + catch-up (SDD §22.4): revisa se já passou da hora e o dia
+        ainda não foi revisado; depois checa a cada 60 min."""
+        while self._running:
+            try:
+                self._reviewed_dates = await reviewed_dates()
+                today = date.today().isoformat()
+                if daily_review_due(datetime.now().hour, self._reviewed_dates, today):
+                    await self._handle_review()
+            except Exception:
+                pass
+            await asyncio.sleep(3600)
 
     async def _auto_learn(self) -> None:
         while self._running:
@@ -249,6 +290,7 @@ class REPL:
         cron_mgr = CronManager()
         self._traces_since_learn = 0
         self._auto_learn_task = asyncio.create_task(self._auto_learn())
+        self._daily_review_task = asyncio.create_task(self._daily_review())
 
         while self._running:
             try:
@@ -304,10 +346,15 @@ class REPL:
                         )
                     elif cmd == "session":
                         await self._handle_session_command(args)
+                    elif cmd == "clear":
+                        self._session_mgr.clear_context()
+                        console.print("[green]Context cleared.[/green]")
                     elif cmd == "compact":
                         await self._handle_compact()
                     elif cmd == "learn":
                         await self._handle_learn()
+                    elif cmd == "review":
+                        await self._handle_review()
                     elif cmd in COMMANDS:
                         if cmd == "cron" and args.startswith("add "):
                             cron_mgr = CronManager()
@@ -400,6 +447,8 @@ class REPL:
                     self._traces_since_learn += 1
                 except Exception:
                     pass
+                await self._maybe_auto_learn()
+                await self._maybe_auto_compact()
 
             except KeyboardInterrupt:
                 continue
@@ -409,6 +458,7 @@ class REPL:
                 render_error(str(e))
 
         self._auto_learn_task.cancel()
+        self._daily_review_task.cancel()
         if self._traces_since_learn:
             try:
                 await run_learning_cycle()

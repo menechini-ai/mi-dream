@@ -75,6 +75,39 @@ async def test_recall_context_fallback_on_error():
     assert result.strategies == []
 
 
+@pytest.mark.asyncio
+async def test_recall_context_includes_recent_memory():
+    from unittest.mock import AsyncMock, MagicMock
+
+    from conftest import FakeAsyncIter, make_driver_mock
+
+    traces = [{"trace": {"id": "t1", "content": "Q: meu nome é Adilson\nA: Prazer"}}]
+    episodes = [{"episode": {"id": "e1", "summary": "Usuário se chama Adilson"}}]
+
+    async def fake_run(query, **kwargs):
+        if "ReasoningTrace" in query:
+            return FakeAsyncIter(traces)
+        return FakeAsyncIter(episodes)
+
+    session = AsyncMock()
+    session.run.side_effect = fake_run
+    driver = make_driver_mock(session)
+
+    mock_router = MagicMock()
+    mock_router.retrieve = AsyncMock(
+        return_value=ExecutionContext(goal="qual o meu nome", strategies=[])
+    )
+
+    with patch("mi_dream.cli.repl.StrategyRouter", return_value=mock_router), \
+         patch("mi_dream.cli.repl.StrategyRepository"), \
+         patch("mi_dream.cli.repl.get_driver", return_value=driver):
+        ctx = await recall_context("qual o meu nome")
+
+    assert len(ctx.recent_traces) == 1
+    assert len(ctx.episodes) == 1
+    assert "Adilson" in ctx.recent_traces[0]["content"]
+
+
 def test_completer_includes_commands():
     completer = SlashCompleter()
     doc = MagicMock()

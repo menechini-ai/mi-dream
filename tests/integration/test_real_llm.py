@@ -8,7 +8,7 @@ import pytest
 from mi_dream.config import settings
 from mi_dream.knowledge.models import CuratorDecision
 from mi_dream.learning.reflector import Reflector
-from mi_dream.llm.client import chat, get_client
+from mi_dream.llm.client import ask_llm, get_client
 
 
 @pytest.fixture(scope="module")
@@ -30,7 +30,7 @@ def llm_available():
 
 def test_llm_client_real_call(llm_available):
     """Real LLM call — verifies provider connectivity."""
-    response = chat(
+    response = ask_llm(
         system="You are a test assistant. Reply with exactly: OK",
         user_message="Say OK",
         max_tokens=10,

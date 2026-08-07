@@ -74,8 +74,3 @@ def load_skills() -> list[dict]:
 @functools.lru_cache(maxsize=2)
 def load_agents() -> list[dict]:
     return _load_yaml_files(_resolve_agents_dir())
-
-
-def invalidate_cache() -> None:
-    load_skills.cache_clear()
-    load_agents.cache_clear()

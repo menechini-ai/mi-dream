@@ -1,16 +1,16 @@
-import asyncio
-
 from mi_dream.config import settings
+from mi_dream.knowledge.curator import Curator
+from mi_dream.knowledge.distiller import KnowledgeDistiller
 from mi_dream.learning.evaluator import Evaluator
 from mi_dream.learning.reflector import Reflector
 from mi_dream.memory.connection import get_driver
+from mi_dream.memory.embeddings import build_embedder
 
 
 class ReflectionScheduler:
     def __init__(self):
         self._evaluator = Evaluator()
         self._reflector = Reflector()
-        self._running = False
 
     async def run_cycle(self) -> dict:
         from mi_dream.memory.bootstrap import ensure_schema
@@ -56,15 +56,48 @@ class ReflectionScheduler:
 
         return {"traces_processed": len(traces), "lessons_created": len(lessons)}
 
-    async def start(self, interval_hours: int = 6):
-        self._running = True
-        while self._running:
-            try:
-                result = await self.run_cycle()
-                print(f"Reflection cycle: {result}")
-            except Exception as e:
-                print(f"Reflection cycle failed: {e}")
-            await asyncio.sleep(interval_hours * 3600)
 
-    def stop(self):
-        self._running = False
+async def run_learning_cycle(tenant_id: str | None = None) -> dict:
+    """Ciclo completo de aprendizado (SDD §20): reflect → distill → curator.
+
+    Cada etapa é isolada em ``try/except``: falha em qualquer fase nunca bloqueia
+    as demais nem a execução (degradação graciosa).
+    """
+    tenant_id = tenant_id or settings.tenant_id
+    report: dict = {"reflection": None, "distill": None, "curator": None}
+
+    try:
+        scheduler = ReflectionScheduler()
+        report["reflection"] = await scheduler.run_cycle()
+    except Exception as e:
+        report["reflection"] = {"error": str(e)}
+
+    try:
+        embedder = None
+        try:
+            embedder = build_embedder()
+        except Exception:
+            embedder = None
+        async with get_driver().session(database=settings.neo4j_database) as session:
+            distiller = KnowledgeDistiller(session, embedder=embedder)
+            lessons = await distiller.pending_lessons(tenant_id)
+            strategies = await distiller.distill(lessons, tenant_id)
+            curator = Curator(session)
+            violations = await curator.run_integrity_checks(tenant_id)
+            transitions = await curator.run_state_machine(tenant_id)
+            duplicates = await curator.deduplicate(tenant_id)
+            promoted = await curator.process_experimental_candidates(tenant_id)
+        report["distill"] = {
+            "lessons_processed": len(lessons),
+            "strategies_touched": len(strategies),
+        }
+        report["curator"] = {
+            "integrity_violations": len(violations),
+            "state_machine": transitions,
+            "duplicates": len(duplicates),
+            "promoted": len(promoted),
+        }
+    except Exception as e:
+        report["distill"] = {"error": str(e)}
+
+    return report

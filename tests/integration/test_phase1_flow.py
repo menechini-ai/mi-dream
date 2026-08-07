@@ -6,12 +6,12 @@ from unittest.mock import AsyncMock
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../src"))
 
 import pytest
+from conftest import FakeAsyncIter
 
 from mi_dream.knowledge.curator import Curator
 from mi_dream.knowledge.models import CuratorDecision, Strategy, StrategyCreate, StrategyState
 from mi_dream.knowledge.repository import StrategyRepository
 from mi_dream.knowledge.router import StrategyRouter
-from mi_dream.knowledge.service import StrategyService
 from mi_dream.learning.reflector import Reflector
 from mi_dream.security.sanitizer import sanitize
 
@@ -26,20 +26,6 @@ def _strategy(**kwargs):
     )
     defaults.update(kwargs)
     return Strategy(**defaults)
-
-
-class FakeAsyncIter:
-    def __init__(self, items):
-        self._items = items
-        self._i = 0
-    def __aiter__(self):
-        return self
-    async def __anext__(self):
-        if self._i >= len(self._items):
-            raise StopAsyncIteration
-        item = self._items[self._i]
-        self._i += 1
-        return item
 
 
 @pytest.mark.asyncio
@@ -82,8 +68,7 @@ async def test_full_phase1_flow():
 
     # 1. Strategy CRUD: create
     repo = StrategyRepository(session)
-    service = StrategyService(repo)
-    created = await service.create(
+    created = await repo.create(
         StrategyCreate(title="K8s debug", description="d", domain="kubernetes", content="c")
     )
     assert created.state == StrategyState.EXPERIMENTAL

@@ -5,25 +5,10 @@ from unittest.mock import AsyncMock
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../src"))
 
 import pytest
+from conftest import FakeAsyncIter
 
 from mi_dream.knowledge.distiller import KnowledgeDistiller
 from mi_dream.knowledge.models import CuratorDecision, Lesson, Strategy, StrategyState
-
-
-class FakeAsyncIter:
-    def __init__(self, items):
-        self._items = items
-        self._i = 0
-
-    def __aiter__(self):
-        return self
-
-    async def __anext__(self):
-        if self._i >= len(self._items):
-            raise StopAsyncIteration
-        item = self._items[self._i]
-        self._i += 1
-        return item
 
 
 def make_lesson(decision=CuratorDecision.CREATE, **kw):
@@ -89,6 +74,47 @@ async def test_distill_reinforce_links_existing_strategy():
     assert not any("CREATE (s:Strategy" in q for q in queries)
     assert any("support_count = s.support_count" in q for q in queries)
     assert any("SUPPORTED_BY" in q for q in queries)
+
+
+@pytest.mark.asyncio
+async def test_distill_create_seeds_metrics():
+    session = AsyncMock()
+    created = make_strategy()
+    session.run.return_value.single.return_value = {"s": created.model_dump(mode="json")}
+    distiller = KnowledgeDistiller(session)
+
+    await distiller.distill([make_lesson(CuratorDecision.CREATE)], "default")
+
+    calls = session.run.call_args_list
+    metrics = [c for c in calls if "support_count = s.support_count" in c.args[0]]
+    assert len(metrics) == 1
+    assert metrics[0].kwargs["delta"] == 1
+    assert metrics[0].kwargs["success_rate"] == 1.0
+
+
+@pytest.mark.asyncio
+async def test_distill_reinforce_updates_success_rate():
+    session = AsyncMock()
+    existing = make_strategy(support_count=2, success_rate=0.7)
+
+    async def mock_run(query, **kwargs):
+        if "MATCH (s:Strategy {domain:" in query:
+            return FakeAsyncIter([{"s": existing.model_dump(mode="json")}])
+        r = AsyncMock()
+        r.single.return_value = {"s": existing.model_dump(mode="json")}
+        return r
+
+    session.run.side_effect = mock_run
+    distiller = KnowledgeDistiller(session)
+
+    await distiller.distill(
+        [make_lesson(CuratorDecision.REINFORCE, summary="Debug K8s pods first")], "default"
+    )
+
+    calls = session.run.call_args_list
+    metrics = [c for c in calls if "support_count = s.support_count" in c.args[0]]
+    assert len(metrics) == 1
+    assert metrics[0].kwargs["success_rate"] == 1.0
 
 
 @pytest.mark.asyncio

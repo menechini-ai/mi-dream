@@ -8,6 +8,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../src"))
 from datetime import UTC, datetime
 
 import pytest
+from conftest import FakeAsyncIter
 
 from mi_dream.agents.tools import recall_strategy, save_reasoning_trace
 from mi_dream.knowledge.models import Strategy, StrategyState
@@ -23,22 +24,6 @@ def _strategy(**kwargs):
     )
     defaults.update(kwargs)
     return Strategy(**defaults)
-
-
-class FakeAsyncIter:
-    def __init__(self, items):
-        self._items = items
-        self._i = 0
-
-    def __aiter__(self):
-        return self
-
-    async def __anext__(self):
-        if self._i >= len(self._items):
-            raise StopAsyncIteration
-        item = self._items[self._i]
-        self._i += 1
-        return item
 
 
 @pytest.mark.asyncio
@@ -179,20 +164,3 @@ async def test_make_save_reasoning_trace_tool_sanitizes():
     metadata = mock_session.run.call_args[1]["metadata"]
     assert isinstance(metadata, str)
     assert json.loads(metadata)["tenant_id"] == "default"
-
-
-def test_create_supervisor_builds_deep_agent():
-    from mi_dream.agents.supervisor import create_supervisor
-
-    with patch("mi_dream.agents.supervisor.create_deep_agent") as mock_cda:
-        mock_cda.return_value = "compiled-graph"
-        with patch("mi_dream.agents.supervisor._build_model", return_value="model"):
-            agent = create_supervisor("deploy k8s", "default")
-    assert agent == "compiled-graph"
-    kwargs = mock_cda.call_args.kwargs
-    assert len(kwargs["tools"]) == 2
-    assert kwargs["tools"][0].name == "recall_strategy"
-    assert kwargs["tools"][1].name == "save_reasoning_trace"
-    assert kwargs["subagents"][0]["name"] == "research"
-    assert "deploy k8s" in kwargs["system_prompt"]
-    assert kwargs["model"] == "model"

@@ -1,15 +1,15 @@
-# Arquitetura — mi-dream
+# Architecture — mi-dream
 
-**Sistema Multi-Agente com Memória de Aprendizado Contínuo.**
+**Multi-Agent System with Continuous Learning Memory.**
 
-O sistema orquestra agentes LLM cuja memória de longo prazo **aprende com a própria execução**: cada conversa/tarefa gera um `ReasoningTrace`, um pipeline assíncrono converte traces em `Lesson` e depois em `Strategy`, e um `Curator` governa a promoção até `ACTIVE` — de onde as estratégias voltam a informar a execução via recall semântico (vetorial). O conhecimento nasce da experiência operacional, não de ingestão de documentos.
+The system orchestrates LLM agents whose long-term memory **learns from its own execution**: every conversation/task generates a `ReasoningTrace`, an async pipeline turns traces into `Lesson` and then into `Strategy`, and a `Curator` governs promotion up to `ACTIVE` — from where strategies feed back into execution via semantic (vector) recall. Knowledge is born from operational experience, not from document ingestion.
 
-- **Design de referência:** [SDD v2.2](../docs/superpowers/specs/2026-08-06-multi-agent-learning-system-design.md)
-- **Stack:** Python 3.11+ · Neo4j 5.26 · `deepagents` (LangGraph) · `neo4j-graphrag` · OpenAI-compatible proxy
+- **Reference design:** [SDD v2.4](../docs/superpowers/specs/2026-08-06-multi-agent-learning-system-design.md)
+- **Stack:** Python 3.11+ · Neo4j 5.26 · `neo4j-graphrag` · `langchain-core` tools · OpenAI-compatible proxy
 
 ---
 
-## 1. Visão Arquitetural
+## 1. Architectural Overview
 
 ```
                           ┌──────────────────────────────┐
@@ -26,259 +26,283 @@ O sistema orquestra agentes LLM cuja memória de longo prazo **aprende com a pr�
             │   (runtime)      │                 │  (async, cron)     │
             │                  │                 │                    │
             │  REPL → ask_llm  │                 │  Evaluator         │
-            │  DeepAgents      │                 │  Reflector (LLM)   │
-            │  Supervisor      │                 │  Scheduler (lotes) │
-            │  Tools:          │                 │  Distiller         │
-            │   recall_strategy│                 │  Curator           │
-            │   save_trace     │                 │                    │
+            │  Tools:          │                 │  Reflector (LLM)   │
+            │   recall_strategy│                 │  Scheduler (batches)│
+            │   save_trace     │                 │  Distiller         │
+            │                  │                 │  Curator           │
+            │                  │                 │  Reviewer          │
             └────────┬─────────┘                 └─────────┬──────────┘
                      │                                     │
                      ▼                                     ▼
                  ┌──────────────────────────────────────────────┐
                  │                 Neo4j 5.26                    │
                  │  ReasoningTrace · Lesson · Strategy           │
+                 │  Episode · DailyReview                        │
                  │  vector index strategy_embedding (1536-d)     │
                  └──────────────────────────────────────────────┘
 ```
 
-Dois caminhos independentes por design:
+Two independent paths by design:
 
-1. **Execution Path (baixa latência, SLO recall < 500ms P95)** — conversa, recall de estratégias, gravação de traces. Nunca é bloqueado por falhas do pipeline de aprendizado.
-2. **Learning Pipeline (assíncrono, cron/CLI)** — degradação de traces → lessons → strategies → governança. Falha aqui **nunca** bloqueia execução (degradação graciosa).
+1. **Execution Path (low latency, recall SLO < 500ms P95)** — conversation, strategy recall, trace recording. Never blocked by learning-pipeline failures.
+2. **Learning Pipeline (async, cron/CLI)** — trace degradation → lessons → strategies → governance. Failure here **never** blocks execution (graceful degradation).
 
 ---
 
-## 2. Componentes por Módulo
+## 2. Components by Module
 
 ### 2.1 `src/mi_dream/config.py`
-Configuração central via `pydantic-settings` + `python-dotenv`. Singleton `settings` consumido por todos os módulos.
+Central configuration via `pydantic-settings` + `python-dotenv`. Singleton `settings` consumed by every module.
 
-### 2.2 `src/mi_dream/cli/` — Interface de linha de comando
-| Arquivo | Responsabilidade |
+### 2.2 `src/mi_dream/cli/` — Command-line interface
+| File | Responsibility |
 |---|---|
-| `app.py` | CLI typer: `chat`, `sessions`, `init`, `reflect`, `distill`, `curator` |
-| `repl.py` | Loop interativo (`prompt_toolkit`): slash commands, recall antes de responder, grava trace por mensagem, sessões |
-| `session.py` | `SessionManager` + `new_session_id()` — sessões persistentes em JSON (`~/.midream/sessions/*.json`) |
-| `commands.py` | Registro de slash commands (`COMMANDS` + `dispatch`) |
-| `completer.py` | Autocomplete de `/comandos` no prompt |
-| `renderer.py` | Saída rich (tabelas, painéis, Markdown, health check) |
+| `app.py` | typer CLI: `chat`, `sessions`, `init`, `reflect`, `distill`, `curator`, `learn`, `review` |
+| `repl.py` | Interactive loop (`prompt_toolkit`): slash commands, recall before answering, per-message trace, sessions |
+| `session.py` | `SessionManager` + `new_session_id()` — persistent JSON sessions (`~/.midream/sessions/*.json`) |
+| `commands.py` | Slash command registry (`COMMANDS` + `dispatch`) |
+| `completer.py` | Slash-command autocomplete in the prompt |
+| `renderer.py` | rich output (tables, panels, Markdown, health check) |
+| `cron.py` | `CronManager` — scheduled jobs (`/cron add <interval> "<prompt>"`), scripts in `.midream/scripts/` |
 
-### 2.3 `src/mi_dream/agents/` — Camada de agentes (DeepAgents)
-| Arquivo | Responsabilidade |
+### 2.3 `src/mi_dream/agents/` — Agent layer
+| File | Responsibility |
 |---|---|
-| `supervisor.py` | `create_supervisor()` — grafo DeepAgents: Supervisor + sub-agent `research`, com prompt que obriga `recall_strategy` antes de planejar e `save_reasoning_trace` após executar |
-| `tools.py` | Tools langchain: `recall_strategy` (router vetorial) e `save_reasoning_trace` (persistência sanitizada) |
+| `tools.py` | langchain tools: `recall_strategy` (vector router) and `save_reasoning_trace` (sanitized persistence) |
 
-> **Nota de implementação:** a rota de chat interativo do REPL hoje chama `ask_llm` diretamente (com prompt montado a partir do `ExecutionContext`); o grafo DeepAgents completo (`create_supervisor`) é o harness de execução de tarefas multi-agente (SDD §6) e está acessível via `tests/integration/test_real_llm.py`.
+> **Implementation note:** the REPL interactive chat route calls `ask_llm` directly (with a prompt built from the `ExecutionContext`). The langchain tools in `tools.py` are the multi-agent task harness (SDD §6) and are exercised via `tests/test_agents_supervisor.py`.
 
-### 2.4 `src/mi_dream/knowledge/` — Domínio de Conhecimento
-| Arquivo | Responsabilidade |
+### 2.4 `src/mi_dream/knowledge/` — Knowledge Domain
+| File | Responsibility |
 |---|---|
-| `models.py` | Modelos Pydantic: `Strategy`, `StrategyCreate`, `Lesson`, enums `StrategyState`/`CuratorDecision`, `VALID_TRANSITIONS` |
-| `repository.py` | `StrategyRepository` — CRUD Cypher parametrizado (nunca string interpolada) |
-| `service.py` | `StrategyService` — regras de negócio: promoção, transição validada, supersessão |
-| `router.py` | `StrategyRouter` + `ExecutionContext` — contrato de runtime entre retrieval e agentes |
-| `vector.py` | `StrategyVectorRetriever` — adapter **async** sobre o `VectorCypherRetriever` do `neo4j-graphrag` (sync, roda em `to_thread`) |
-| `distiller.py` | `KnowledgeDistiller` — consolida `Lesson` → `Strategy` EXPERIMENTAL + link `SUPPORTED_BY` (KM-002) |
-| `curator.py` | `Curator` — integridade, máquina de estados, dedup, promoção EXPERIMENTAL→ACTIVE, imutabilidade de traces |
+| `models.py` | Pydantic models: `Strategy`, `StrategyCreate`, `Lesson`, enums `StrategyState`/`CuratorDecision`, `VALID_TRANSITIONS` |
+| `repository.py` | `StrategyRepository` — parameterized Cypher CRUD (never string interpolation); promotion/transition/supersession rules live in the Cypher itself |
+| `router.py` | `StrategyRouter` + `ExecutionContext` — runtime contract between retrieval and agents |
+| `vector.py` | `StrategyVectorRetriever` — **async** adapter over `neo4j-graphrag`'s `VectorCypherRetriever` (sync, runs via `to_thread`) |
+| `distiller.py` | `KnowledgeDistiller` — consolidates `Lesson` → EXPERIMENTAL `Strategy` + `SUPPORTED_BY` link (KM-002); seeds `support_count`/`success_rate` on CREATE/REINFORCE |
+| `curator.py` | `Curator` — integrity, state machine, dedup, EXPERIMENTAL→ACTIVE promotion, trace immutability |
 
-### 2.5 `src/mi_dream/learning/` — Pipeline de Aprendizado
-| Arquivo | Responsabilidade |
+### 2.5 `src/mi_dream/learning/` — Learning Pipeline
+| File | Responsibility |
 |---|---|
-| `evaluator.py` | `Evaluator` — pontua traces para reflexão (heurística determinística: comprimento, outcome, falha) |
-| `reflector.py` | `Reflector` — sintetiza `Lesson` via LLM (`ask_llm`); fallback heurístico quando o provider falha; descarta score < 0.5 |
-| `scheduler.py` | `ReflectionScheduler` — ciclo: seleciona traces sem lesson (lote de 50) → avalia → reflete → cria `Lesson` + `DERIVED_FROM`. `start()` roda em loop com intervalo configurável |
+| `evaluator.py` | `Evaluator` — scores traces for reflection (deterministic heuristic: length, outcome, failure; `+0.1` bonus for `success`) |
+| `reflector.py` | `Reflector` — synthesizes `Lesson` via LLM (`ask_llm`); heuristic fallback when the provider fails; drops score < 0.5 |
+| `scheduler.py` | `ReflectionScheduler` — cycle: selects traces without a lesson (batch of 50) → evaluates → reflects → creates `Lesson` + `DERIVED_FROM`. `run_learning_cycle()` orchestrates reflect→distill→curator (automatic reflection) |
+| `compactor.py` | `ConversationCompactor` — `summarize()` (LLM) + `compact()` (char threshold + keep_recent); `persist_episode()` writes `(:Episode)` + derived `ReasoningTrace` |
+| `reviewer.py` | `DailyReviewer` — Daily Review (SDD §22): daily production stats + pipeline health + integrity (`Curator`) + LLM narrative summary; persists `(:DailyReview {date})`. Helpers: `run_daily_review`, `reviewed_dates`, `daily_review_due` |
 
-### 2.6 `src/mi_dream/memory/` — Persistência e Memória
-| Arquivo | Responsabilidade |
+### 2.6 `src/mi_dream/memory/` — Persistence and Memory
+| File | Responsibility |
 |---|---|
-| `connection.py` | `get_driver()` — singleton do driver async Neo4j (Bolt) |
-| `bootstrap.py` | `bootstrap_schema()`/`ensure_schema()` — constraints + vetor indexes 1536-d cosine; idempotente e cacheado em processo |
-| `reasoning.py` | `trace_fingerprint()` — SHA-256 determinístico do payload do trace (suporta INV-001) |
-| `embeddings.py` | `build_embedder()` — `OpenAIEmbeddings` do `neo4j-graphrag`, reutiliza o proxy OpenAI-compatible |
+| `connection.py` | `get_driver()` — async Neo4j (Bolt) driver singleton |
+| `bootstrap.py` | `bootstrap_schema()`/`ensure_schema()` — constraints + 1536-d cosine vector indexes; idempotent and process-cached |
+| `reasoning.py` | `trace_fingerprint()` — deterministic SHA-256 of the trace payload (supports INV-001) |
+| `embeddings.py` | `build_embedder()` — `OpenAIEmbeddings` from `neo4j-graphrag`, reuses the OpenAI-compatible proxy |
 
 ### 2.7 `src/mi_dream/llm/client.py`
-`get_client()` (singleton `OpenAI`) + `ask_llm()` — chamada chat com system/user, executada fora do loop via executor quando necessário.
+`get_client()` (OpenAI singleton) + `ask_llm()` — chat call with system/user, run off the event loop via an executor when needed.
 
 ### 2.8 `src/mi_dream/health.py`
-`check_all()` → `check_neo4j()` + `check_llm_provider()`; usado pelo `/status` do REPL.
+`check_all()` → `check_neo4j()` + `check_llm_provider()`; used by the REPL `/status`.
 
 ### 2.9 `src/mi_dream/security/sanitizer.py`
-Sanitização regex de PII (email, telefone, SSN, API keys, bearer) antes de qualquer gravação de trace (SDD §18.2). `sanitize()` + `contains_pii()`.
+Regex PII sanitization (email, phone, SSN, API keys, bearer) before any trace write (SDD §18.2). `sanitize()`.
 
 ---
 
-## 3. Modelo de Dados (Neo4j)
+## 3. Data Model (Neo4j)
 
-### 3.1 Nós
-| Nó | Propriedades | Criado por |
+### 3.1 Nodes
+| Node | Properties | Created by |
 |---|---|---|
-| `ReasoningTrace` | `id, content, metadata (JSON string), outcome, content_hash, created_at, tenant_id` | tools/save_reasoning_trace, REPL |
+| `ReasoningTrace` | `id, content, metadata (JSON string), outcome, content_hash, created_at, tenant_id` | tools/save_reasoning_trace, REPL, Compactor (derived from summary) |
 | `Lesson` | `id, summary, decision (CREATE/REINFORCE/REFINE/CONTRADICT), source_trace_ids, confidence, tenant_id, created_at` | ReflectionScheduler |
 | `Strategy` | `id, title, description, domain, content, state, support_count, success_rate, created_at, updated_at, tenant_id, superseded_by, embedding (1536-d)` | KnowledgeDistiller |
+| `Episode` | `id, summary, content, session_id, tenant_id, created_at, embedding (1536-d)` | ConversationCompactor |
+| `DailyReview` | `date, report (JSON string), tenant_id, created_at` | DailyReviewer |
 
-### 3.2 Relações
-| Relação | Origem → Destino | Significado |
+### 3.2 Relationships
+| Relationship | Source → Target | Meaning |
 |---|---|---|
-| `DERIVED_FROM` | `Lesson` → `ReasoningTrace` | a lesson conhece suas origens |
-| `SUPPORTED_BY` | `Lesson` → `Strategy` | lesson suporta a strategy (KM-002) |
-| `SUPERSEDES` | `Strategy` → `Strategy` | versionamento (KM-006) |
+| `DERIVED_FROM` | `Lesson` → `ReasoningTrace` | the lesson knows its origins |
+| `SUPPORTED_BY` | `Lesson` → `Strategy` | lesson supports the strategy (KM-002) |
+| `SUPERSEDES` | `Strategy` → `Strategy` | versioning (KM-006) |
 
-### 3.3 Máquina de estados da Strategy (`VALID_TRANSITIONS`)
+### 3.3 Strategy state machine (`VALID_TRANSITIONS`)
 ```
 EXPERIMENTAL ──(support_count≥3, success_rate≥0.6)──▶ ACTIVE
-ACTIVE ──(sem uso 90d)──▶ STALE
-STALE ──(reforçada)──▶ ACTIVE        STALE ──(90d+ sem uso, support<3)──▶ ARCHIVED
-ACTIVE ──(sucessora melhor)──▶ SUPERSEDED ──(90d+)──▶ ARCHIVED
-ACTIVE ──(revalidação falha, sem sucessora)──▶ DEPRECATED   [Fase 3]
+ACTIVE ──(unused 90d)──▶ STALE
+STALE ──(reinforced)──▶ ACTIVE       STALE ──(90d+ unused, support<3)──▶ ARCHIVED
+ACTIVE ──(better successor)──▶ SUPERSEDED ──(90d+)──▶ ARCHIVED
+ACTIVE ──(failed revalidation, no successor)──▶ DEPRECATED   [Phase 3]
 ```
 
 ---
 
-## 4. Fluxo de Execução (Chat)
+## 4. Execution Flow (Chat)
 
 ```
-Usuário digita / <mensagem>
+User types / or a message
    │
    ▼
 REPL (repl.py:98)
-   ├─ comando slash → dispatch() / render_*  (skills, agents, help, session, clear, exit, status)
-   └─ mensagem normal →
+   ├─ slash command → dispatch() / render_*  (skills, agents, help, session, clear, exit, status, compact, learn, review)
+   └─ regular message →
         add_message("user", msg)                         → SessionManager (JSON)
         recall_context(msg)                              → StrategyRouter.retrieve()
         │                                                  ├─ vector-first: StrategyVectorRetriever.search(goal, tenant, domain, ACTIVE)
-        │                                                  └─ fallback: list_by_domain(ACTIVE)  [se vetorial falhar/vazio]
-        build_system_prompt(ctx)                          → injeta strategies no system prompt
+        │                                                  ├─ fallback: list_by_domain(ACTIVE)  [if vector fails/empty]
+        │                                                  ├─ recent_traces: latest 20 ReasoningTrace of the tenant
+        │                                                  └─ episodes: latest 5 Episode (session summaries)
+        build_system_prompt(ctx)                          → injects strategies + recent history + summaries into the system prompt
         ask_llm(system, user)                             → provider (executor thread)
         add_message("assistant", msg) + render            → SessionManager + rich
-        save_reasoning_trace(...)                         → Neo4j ReasoningTrace (sanitizado, content_hash)
+        save_reasoning_trace(...)                         → Neo4j ReasoningTrace (sanitized, content_hash)
+        auto_learn()                                      → context: every LEARN_TRACE_THRESHOLD traces + on /exit
+        auto_compact()                                    → if context >= COMPACT_THRESHOLD_CHARS: LLM summary + persist Episode + cycle
+        background tasks                                  → _auto_learn (time, fallback) + _daily_review (fixed hour + catch-up)
 ```
 
-**Degradação graciosa:** se o Neo4j ou o router falhar, `recall_context` retorna `ExecutionContext` vazio e o chat continua do zero. Falha ao gravar trace nunca interrompe a resposta.
+**Graceful degradation:** if Neo4j or the router fails, `recall_context` returns an empty `ExecutionContext` and the chat continues from scratch. A trace-write failure never interrupts the response. A learning-pipeline failure never blocks the chat.
 
 ---
 
 ## 5. Learning Pipeline
 
 ```
-ReasoningTrace (append-only, sanitizado)
-   │  cron: /reflect (ReflectionScheduler.run_cycle)  — lote de até 50 traces SEM lesson
+ReasoningTrace (append-only, sanitized)
+   │  cron: /reflect (ReflectionScheduler.run_cycle)  — batch of up to 50 traces WITHOUT lesson
    ▼
-Evaluator.evaluate()      → pontua (0..1): conteúdo>200ch +0.3, outcome +0.4, falha +0.3
+Evaluator.evaluate()      → scores (0..1): content>200ch +0.3, outcome +0.4, failure +0.3, success +0.1
    ▼
-Reflector.reflect()       → LLM sintetiza Lesson (decision + confidence); fallback heurístico
+Reflector.reflect()       → LLM synthesizes Lesson (decision + confidence); heuristic fallback
    ▼
-(Learning:Lesson) + (l)-[:DERIVED_FROM]->(t)          persistido pelo scheduler
+(Learning:Lesson) + (l)-[:DERIVED_FROM]->(t)          persisted by the scheduler
    │  cron: /distill (KnowledgeDistiller)
    ▼
-Distiller                 → CREATE: Strategy EXPERIMENTAL + SUPPORTED_BY + embedding
-                            REINFORCE/REFINE: match por título → update_metrics (+1) / cria nova
-                            CONTRADICT: só registra na Lesson (sem mutação)  [FailurePattern: Fase 2]
+Distiller                 → CREATE: EXPERIMENTAL Strategy + SUPPORTED_BY + embedding
+                            REINFORCE/REFINE: match by title → update_metrics (+1) / create new
+                            CONTRADICT: recorded on the Lesson only (no mutation)  [FailurePattern: Phase 2]
    │  cron: /curator (Curator)
    ▼
 Curator                   → run_integrity_checks (KM-002, KM-006, INV-001)
                             process_experimental_candidates (EXPERIMENTAL→ACTIVE, INV-002)
                             run_state_machine (STALE/SUPERSEDED/ARCHIVED)
-                            deduplicate (merge SUPPORTED_BY + delete duplicado)
+                            deduplicate (merge SUPPORTED_BY + delete duplicate)
    │
    ▼
-Strategy ACTIVE  ──▶  disponível para o recall vetorial (embedding já gravado no CREATE)
+Strategy ACTIVE  ──▶  available for vector recall (embedding already written at CREATE)
 ```
 
-> **Ordem operacional recomendada:** `reflect` → `distill` → `curator`. O Distiller grava o embedding do Strategy no momento do CREATE (via `build_embedder()`), garantindo que estratégias ACTIVE sejam alcançáveis pelo recall vetorial.
+> **Recommended operational order:** `reflect` → `distill` → `curator`. The Distiller writes the Strategy embedding at CREATE time (via `build_embedder()`), guaranteeing ACTIVE strategies are reachable by vector recall.
+
+### 5.1 Automatic reflection, context triggers, and Daily Review (v2.4)
+
+- **`run_learning_cycle()`** (`learning/scheduler.py`) orchestrates reflect→distill→curator in a single call; each stage is isolated in `try/except` (a failure never blocks the chat). Run in the background by the REPL (context triggers + every `REFL_INTERVAL_MINUTES` + on `/exit`), by the `mi-dream learn` daemon (infinite loop, `-i/--interval-minutes`, `--once` for a single cycle), and manually via `/learn`.
+- **Context triggers (v2.4):** in the REPL, after each turn: (a) if `_traces_since_learn >= LEARN_TRACE_THRESHOLD` → run the cycle; (b) if the context >= `COMPACT_THRESHOLD_CHARS` → auto-compact (`ConversationCompactor`) + persist `(:Episode)` + run the cycle. The time interval remains as a fallback.
+- **Compaction** (`learning/compactor.py`): when the session exceeds `COMPACT_THRESHOLD_CHARS`, the `ConversationCompactor` summarizes old turns via LLM (preserving key facts), keeps `COMPACT_KEEP_RECENT` turns verbatim, and persists the summary as `(:Episode)` (with embedding in the `episode_embedding` index) **and** as a derived `ReasoningTrace` — so the compacted summary enters the learning pipeline.
+- **Daily Review (v2.4)** (`learning/reviewer.py`): `DailyReviewer` collects daily stats (traces/episodes/lessons/strategies/promoted), pipeline health (unprocessed traces, pending lessons, promotion candidates), integrity via `Curator`, and an LLM narrative summary; persists `(:DailyReview {date, report})`. Runs at a fixed hour with catch-up on start (REPL/daemon), manually via `/review` or `mi-dream review [--once]`.
 
 ---
 
-## 6. Recall Vetorial
+## 6. Vector Recall
 
-`StrategyVectorRetriever` (vector.py) adapta o `VectorCypherRetriever` do `neo4j-graphrag`:
+`StrategyVectorRetriever` (vector.py) adapts `neo4j-graphrag`'s `VectorCypherRetriever`:
 
-- Índice `strategy_embedding` (1536-d, cosine) definido no bootstrap.
-- Query de retrieval (`RETRIEVAL_QUERY`) resolve `superseded_by` via `OPTIONAL MATCH (node)-[:SUPERSEDES]->(succ)` e usa projeção de mapa com `.id` (shorthand exige `.`; chave sem ponto vira variável).
-- Filtros na busca: `{tenant_id, state: ACTIVE, domain}`.
-- Retriever subjacente é **síncrono** → roda em `asyncio.to_thread`.
-- **Workaround conhecido:** bug upstream do `neo4j-graphrag` 1.18.0 em que `_node_embedding_property` nunca é populado — o adapter o copia de `_embedding_node_property` em `_build()` (vector.py:69).
-- `Strategy.score` (cosine similarity) é preenchido pelo retriever; o Router expõe o contexto via `ExecutionContext.to_json()`.
+- `strategy_embedding` index (1536-d, cosine) defined at bootstrap.
+- Retrieval query (`RETRIEVAL_QUERY`) resolves `superseded_by` via `OPTIONAL MATCH (node)-[:SUPERSEDES]->(succ)` and uses map projection with `.id` (shorthand requires `.`; a key without a dot becomes a variable).
+- Search filters: `{tenant_id, state: ACTIVE, domain}`.
+- Underlying retriever is **synchronous** → runs via `asyncio.to_thread`.
+- **Known workaround:** upstream `neo4j-graphrag` 1.18.0 bug where `_node_embedding_property` is never populated — the adapter copies it from `_embedding_node_property` in `_build()` (vector.py:69).
+- `Strategy.score` (cosine similarity) is filled by the retriever; the Router exposes the context via `ExecutionContext.to_json()`.
 
 ---
 
 ## 7. CLI
 
-### Comandos (typer)
-| Comando | Ação |
+### Commands (typer)
+| Command | Action |
 |---|---|
-| `mi-dream chat [-s <sessão>]` | REPL interativo (sessão nova aleatória, resumível) |
-| `mi-dream sessions` | Lista sessões salvas |
-| `mi-dream init` | Bootstra do schema Neo4j (constraints + índices) |
-| `mi-dream reflect` | Um ciclo Evaluator→Reflector→Lesson |
-| `mi-dream distill` | Lessons pendentes → Strategies EXPERIMENTAL |
-| `mi-dream curator [--tenant]` | Governança (integridade, estado, dedup) |
+| `mi-dream chat [-s <session>]` | Interactive REPL (new random or resumed session, resumable) |
+| `mi-dream sessions` | List saved sessions |
+| `mi-dream init` | Bootstrap the Neo4j schema (constraints + indexes) |
+| `mi-dream reflect` | One Evaluator→Reflector→Lesson cycle |
+| `mi-dream distill` | Pending lessons → EXPERIMENTAL Strategies |
+| `mi-dream curator [--tenant]` | Governance (integrity, state, dedup) |
+| `mi-dream learn` | Automatic reflection daemon (infinite loop, `-i/--interval-minutes`; `--once` for a single cycle) |
+| `mi-dream review` | Daily Review (stats + integrity + LLM summary; `--once` for a single review; daily daemon without `--once`) |
 
 ### Slash commands (REPL)
-`/skills` `/agents` `/commands` `/help` `/session [<id>]` `/clear` `/status` `/exit`
+`/skills` `/agents` `/commands` `/help` `/session [<id>]` `/clear` `/status` `/exit` `/compact` `/learn` `/review`
 
-### Sessões
-- `new_session_id()` gera `MMDDHHMM-xxxx` (ex.: `08061257-a1b2`) — resumível com `/session <id>`.
-- Persistência em JSON (`~/.midream/sessions/`); `/session` sem args cria sessão nova.
-
----
-
-## 8. Segurança e Invariantes
-
-### Segurança (SDD §18)
-- **PII/Secrets:** `sanitize()` aplicado antes de gravar qualquer `ReasoningTrace`; `trace_fingerprint` cobre o payload completo.
-- **Tenant:** todo nó carrega `tenant_id`; o Router filtra por escopo antes do recall (ACL Neo4j: Fase 2).
-- **Injection:** apenas Cypher parametrizado (nenhuma interpolação de string).
-- **Aprovação humana:** promoção para ACTIVE é governada pelo Curator (Fase 1 manual; workflow de aprovação: Fase 2).
-
-### Invariantes garantidos pelo Curator
-| ID | Regra | Onde |
-|---|---|---|
-| INV-001 / KM-001 | ReasoningTrace imutável (append-only + `content_hash`) | `check_trace_immutability` |
-| INV-002 | ACTIVE exige `support_count >= 3` | `process_experimental_candidates` |
-| INV-002a | `support_count` monotonicamente não-decrescente (clamp no Cypher) | `update_metrics` |
-| INV-003 | SUPERSEDED aponta para exatamente uma sucessora | `mark_superseded` |
-| KM-002 | ACTIVE possui ≥ 1 Lesson `SUPPORTED_BY` | `INTEGRITY_CHECKS` |
-| KM-006 | `SUPERSEDES` forma DAG (sem ciclos) | `INTEGRITY_CHECKS` |
+### Sessions
+- `new_session_id()` generates `MMDDHHMM-xxxx` (e.g., `08061257-a1b2`) — resumable with `/session <id>`.
+- JSON persistence (`~/.midream/sessions/`); `/session` without args creates a new session.
+- The REPL preserves a resumed session (`chat --session`); it only creates a new one if the current session is empty.
 
 ---
 
-## 9. Configuração (`.env`)
+## 8. Security and Invariants
 
-| Variável | Default | Uso |
+### Security (SDD §18)
+- **PII/Secrets:** `sanitize()` applied before writing any `ReasoningTrace`; `trace_fingerprint` covers the full payload.
+- **Tenant:** every node carries `tenant_id`; the Router filters by scope before recall (Neo4j ACL: Phase 2).
+- **Injection:** parameterized Cypher only (no string interpolation).
+- **Human approval:** promotion to ACTIVE is governed by the Curator (Phase 1 manual; approval workflow: Phase 2).
+
+### Invariants enforced by the Curator
+| ID | Rule | Where |
 |---|---|---|
-| `NEO4J_URI` | `bolt://localhost:7687` | Conexão Bolt |
-| `NEO4J_USER` / `NEO4J_PASSWORD` | `neo4j` / — | Credenciais |
+| INV-001 / KM-001 | ReasoningTrace immutable (append-only + `content_hash`) | `check_trace_immutability` |
+| INV-002 | ACTIVE requires `support_count >= 3` | `process_experimental_candidates` |
+| INV-002a | `support_count` monotonically non-decreasing (clamp in Cypher) | `update_metrics` |
+| INV-003 | SUPERSEDED points to exactly one successor | `mark_superseded` |
+| KM-002 | ACTIVE has ≥ 1 `SUPPORTED_BY` Lesson | `INTEGRITY_CHECKS` |
+| KM-006 | `SUPERSEDES` forms a DAG (no cycles) | `INTEGRITY_CHECKS` |
+
+---
+
+## 9. Configuration (`.env`)
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `NEO4J_URI` | `bolt://localhost:7687` | Bolt connection |
+| `NEO4J_USER` / `NEO4J_PASSWORD` | `neo4j` / — | Credentials |
 | `NEO4J_DATABASE` | `neo4j` | Database |
-| `TENANT_ID` | `default` | Escopo de conhecimento |
-| `REFLECTION_CRON` | `0 */6 * * *` | Cadência de reflexão |
+| `TENANT_ID` | `default` | Knowledge scope |
+| `REFL_INTERVAL_MINUTES` | `10` | Auto-cycle interval in the REPL (fallback) |
+| `COMPACT_THRESHOLD_CHARS` | `8000` | Context size that triggers compaction |
+| `COMPACT_KEEP_RECENT` | `8` | Turns kept verbatim after compaction |
+| `LEARN_TRACE_THRESHOLD` | `10` | Traces since the last cycle that trigger auto-learn (v2.4) |
+| `DAILY_REVIEW_HOUR` | `8` | Hour (0-23) for the daily review (v2.4) |
 | `LLM_PROVIDER` | `anthropic` | Provider |
-| `LLM_BASE_URL` | `http://localhost:20128/v1` | Endpoint OpenAI-compatible |
-| `LLM_API_KEY` | — | Chave (obrigatória para chat) |
-| `LLM_MODEL` | `claude-sonnet-4-6` | Modelo |
-| `EMBEDDING_MODEL` | `text-embedding-3-small` | Modelo de embedding |
-| `EMBEDDING_DIMENSIONS` | `1536` | Dimensões do vetor |
-| `EMBEDDING_BASE_URL` / `EMBEDDING_API_KEY` | (usa LLM) | Override do proxy de embedding |
+| `LLM_BASE_URL` | `http://localhost:20128/v1` | OpenAI-compatible endpoint |
+| `LLM_API_KEY` | — | Key (required for chat) |
+| `LLM_MODEL` | `claude-sonnet-4-6` | Model |
+| `LLM_TEMPERATURE` | `0.7` | Sampling temperature for chat calls |
+| `EMBEDDING_MODEL` | `text-embedding-3-small` | Embedding model |
+| `EMBEDDING_DIMENSIONS` | `1536` | Vector dimensions |
+| `EMBEDDING_BASE_URL` / `EMBEDDING_API_KEY` | (uses LLM) | Embedding proxy override |
 
-Infra: `docker-compose.yml` sobe `neo4j:5.26` com APOC, heaps 1G/512M e healthcheck.
+Infra: `docker-compose.yml` starts `neo4j:5.26` with APOC, 1G/512M heaps, and a healthcheck.
 
 ---
 
-## 10. Testes
+## 10. Tests
 
-`pytest` (asyncio_mode=auto), `ruff` como lint. 138 passed / 4 skipped.
+`pytest` (asyncio_mode=auto), `ruff` as linter. 218 passed / 4 skipped.
 
-| Grupo | Cobre |
+| Group | Covers |
 |---|---|
-| `tests/test_*.py` (unitários) | config, connection, models, repository, service, router, vector, curator, distiller, reflection, scheduler, security, health, CLI (app, commands, repl, session, renderer, entry) |
-| `tests/integration/test_phase1_flow.py` | fluxo Fase 1 com Neo4j mocado |
-| `tests/integration/test_cli_integration.py` | REPL end-to-end (Neo4j/LLM reais ou mocks) |
-| `tests/integration/test_load_chat_learning.py` | load test chat→contexto→aprendizado (`LOAD_TEST_MESSAGES`=30, `LOAD_TEST_CONCURRENCY`=5) |
-| `tests/integration/test_real_llm.py` | chamada real ao provider |
+| `tests/test_*.py` (unit) | config, connection, models, repository, router, vector, curator, distiller, reflection, scheduler, reviewer, security, health, CLI (app, commands, repl, session, renderer, entry) |
+| `tests/integration/test_phase1_flow.py` | Phase 1 flow with mocked Neo4j |
+| `tests/integration/test_cli_integration.py` | end-to-end REPL (real or mocked Neo4j/LLM) |
+| `tests/integration/test_load_chat_learning.py` | chat→context→learning load test (`LOAD_TEST_MESSAGES`=30, `LOAD_TEST_CONCURRENCY`=5) |
+| `tests/integration/test_real_llm.py` | real call to the provider |
 
-Comandos:
+Commands:
 ```bash
-uv sync --extra dev      # instala deps + dev deps (NOTA: --dev sozinho não instala dev deps)
+uv sync --extra dev      # installs deps + dev deps (NOTE: --dev alone does NOT install dev deps)
 .venv/bin/python -m pytest          # suite
 .venv/bin/ruff check src tests      # lint
 ```
@@ -287,19 +311,19 @@ uv sync --extra dev      # instala deps + dev deps (NOTA: --dev sozinho não ins
 
 ## 11. Roadmap (SDD §15)
 
-- **Fase 1 (atual):** DeepAgents, Neo4j bolt, Strategy CRUD + estado, Reflection cron, Distiller determinístico, Curator, Lesson como nó de primeira classe, recall vetorial.
-- **Fase 2:** Pattern Miner (clustering), Distiller com LLM (authoring), Knowledge Librarian (Leiden, compactação, reindexação), `FailurePattern`/`BestPractice`/`Workflow`, relações `VALIDATES`/`CONTRADICTS`/`ABSTRACTS`, observability (Langfuse/OTel).
-- **Fase 3:** Capability Graph, cross-tenant, Online Validation (`Validation`, KM-008), Adaptive Retrieval.
+- **Phase 1 (current):** langchain tools, Neo4j bolt, Strategy CRUD + state, automatic reflection, deterministic Distiller, Curator, Lesson as a first-class node, vector recall, Episode compaction (v2.3), context triggers + Daily Review (v2.4).
+- **Phase 2:** Pattern Miner (clustering), LLM Distiller (authoring), Knowledge Librarian (Leiden, compaction, reindexing), `FailurePattern`/`BestPractice`/`Workflow`, `VALIDATES`/`CONTRADICTS`/`ABSTRACTS` relationships, observability (Langfuse/OTel).
+- **Phase 3:** Capability Graph, cross-tenant, Online Validation (`Validation`, KM-008), Adaptive Retrieval.
 
 ---
 
-## 12. Decisões de Arquitetura Relevantes (resumo)
+## 12. Relevant Architecture Decisions (summary)
 
-- **Cypher direto no Bolt, não NAMS hospedado** — necessário para Curator (dedup, SUPERSEDES, integridade).
-- **Reflexão em lote (cron), nunca por episódio isolado** — evita ruído de lessons triviais.
-- **`metadata` como JSON string + `outcome` primitivo** — Neo4j rejeita Map como propriedade; outcome vira propriedade pontuável pelo Evaluator.
-- **Distiller determinístico na Fase 1** — a decisão já vem do Reflector; authoring LLM é Fase 2.
-- **KM-002 restrito a ACTIVE** — EXPERIMENTAL nasce sem lesson de suporte por construção.
-- **Execution Context como objeto de runtime**, não do grafo — trocar o Router não altera os agentes.
-- **`prompt_session`/`sess` com nomes distintos no REPL** — evita shadowing que derrubava `prompt_async` (regressão corrigida).
-- **Scheduler em lotes de 50** (`LIMIT`) — ciclo idempotente (`NOT EXISTS { (:Lesson)-[:DERIVED_FROM]->(t) }`).
+- **Direct Cypher over Bolt, not hosted NAMS** — required for the Curator (dedup, SUPERSEDES, integrity).
+- **Batch reflection (cron), never per isolated episode** — avoids trivial-lesson noise.
+- **`metadata` as a JSON string + primitive `outcome`** — Neo4j rejects Map as a property; outcome becomes a property the Evaluator can score.
+- **Deterministic Distiller in Phase 1** — the decision already comes from the Reflector; LLM authoring is Phase 2.
+- **KM-002 restricted to ACTIVE** — EXPERIMENTAL is born without a supporting lesson by construction.
+- **Execution Context as a runtime object**, not from the graph — swapping the Router does not change the agents.
+- **`prompt_session`/`sess` with distinct names in the REPL** — avoids the shadowing that broke `prompt_async` (regression fixed).
+- **Scheduler in batches of 50** (`LIMIT`) — idempotent cycle (`NOT EXISTS { (:Lesson)-[:DERIVED_FROM]->(t) }`).

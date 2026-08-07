@@ -10,7 +10,7 @@ import pytest
 
 from mi_dream.knowledge.models import Strategy, StrategyState
 from mi_dream.knowledge.repository import StrategyRepository
-from mi_dream.knowledge.router import StrategyRouter
+from mi_dream.knowledge.router import ExecutionContext, StrategyRouter
 
 
 def _strategy(**kwargs):
@@ -100,3 +100,12 @@ async def test_retrieve_falls_back_to_domain_when_vector_empty():
 
     assert ctx.strategies == []
     repo.list_by_domain.assert_called_once()
+
+
+def test_execution_context_defaults_recent_memory():
+    ctx = ExecutionContext(goal="x")
+    assert ctx.recent_traces == []
+    assert ctx.episodes == []
+    data = ctx.to_dict()
+    assert "recent_traces" in data
+    assert "episodes" in data

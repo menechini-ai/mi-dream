@@ -3,7 +3,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../src"))
 
-from mi_dream.security.sanitizer import contains_pii, sanitize
+from mi_dream.security.sanitizer import sanitize
 
 
 def test_sanitize_redacts_email():
@@ -17,14 +17,6 @@ def test_sanitize_redacts_api_key():
     text = "api_key=sk-12345abcdef"
     result = sanitize(text)
     assert "sk-12345abcdef" not in result
-
-
-def test_contains_pii_detects_email():
-    assert contains_pii("user@example.com") is True
-
-
-def test_contains_pii_false_for_clean_text():
-    assert contains_pii("just a normal string") is False
 
 
 def test_sanitize_idempotent():
